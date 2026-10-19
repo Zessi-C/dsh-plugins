@@ -1,0 +1,99 @@
+# dsh-vibe-orchestrator bundle patch.
+#
+# One Host row and exactly one Agent preset.
+#
+# The preset `vibe` is the whole mode. It deliberately mounts the full working
+# toolset, because every delegated worker inherits the preset and needs to be able
+# to do work. The orchestrator's read-only boundary, the three tier tools, and the
+# per-role personas are all applied per Agent by the Host row, so the mode roster
+# lists one Vibe mode and nothing else.
+
+- insert:
+    # Shaping row: owns the live tier routes and shapes every Vibe Agent by role.
+    - id: vibe-orchestrator
+      name: 'dsh-vibe-orchestrator'
+
+    - id: preset-vibe
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: vibe
+        name: Vibe
+        description: Orchestrator session — reads and routes work to fast, good, and expert subagents; never edits files itself.
+        order: 20
+        plugins:
+          # No persona row: the Host row installs the role persona for the
+          # orchestrator and for each tier, so one preset serves all four roles.
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+
+          # The full working toolset. The orchestrator has the mutating ones
+          # removed by the Host row; the delegated workers keep all of them.
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
+
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
+
+          # `send_message`, `interrupt_agent`, and `list_agents`: the orchestrator
+          # steers and collects its workers with these.
+          - id: tool-subagent-control
+            name: '@deepseek-ai/dsh-tool-subagent-control'
+
+          - id: tool-subagent-list-agents
+            name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+
+          - id: present
+            name: '@deepseek-ai/dsh-tool-present'

@@ -1,0 +1,53 @@
+{
+  "name": "dsh-plugin-updater",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Detects and applies updates for the dsh profile's plugins: npm-registry releases, git-remote plugins including private repositories, and plugins whose declared dsh range lags behind the running dsh.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Zessi-C",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Zessi-C/dsh-plugins.git"
+  },
+  "homepage": "https://github.com/Zessi-C/dsh-plugins/tree/main/packages/dsh-plugin-updater",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "plugin-update",
+    "self-update"
+  ],
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ]
+    }
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "locale/*.json",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ]
+}

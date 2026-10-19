@@ -1,0 +1,15 @@
+{
+  "name": "dsh-plugins",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Private dsh plugin monorepo: install one package from here on any machine and keep it updated from a single place.",
+  "license": "MIT",
+  "author": "Zessi-C",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Zessi-C/dsh-plugins.git"
+  },
+  "workspaces": [
+    "packages/*"
+  ]
+}

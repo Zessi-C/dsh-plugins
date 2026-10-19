@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Plugin Updates",
+    "description": "Checks installed dsh plugins for newer versions, git-remote updates, and versions that no longer satisfy the running dsh, then applies the ones you choose."
+  }
+}

@@ -1,0 +1,9 @@
+# Patch layer contributed by dsh-web-search-model.
+#
+# The host half has no behaviour. The single purpose of this entry is to make the
+# package an enabled Loader entry: dsh-client-modules scans enabled Loader entries
+# when assembling the client startup graph, and thereby hands the ./client path
+# declared under `dsh.client` in package.json to the browser.
+- insert:
+    - id: web-search-model
+      name: 'dsh-web-search-model'

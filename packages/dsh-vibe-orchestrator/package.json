@@ -1,0 +1,58 @@
+{
+  "name": "dsh-vibe-orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Vibe mode for DeepSeek Harness: the main conversation becomes a read-only orchestrator that routes work to fast, good, and expert subagents.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Zessi-C",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Zessi-C/dsh-plugins.git"
+  },
+  "homepage": "https://github.com/Zessi-C/dsh-plugins/tree/main/packages/dsh-vibe-orchestrator",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "orchestrator",
+    "subagent",
+    "multi-agent",
+    "vibe"
+  ],
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ]
+    }
+  },
+  "files": [
+    "lib/index.js",
+    "lib/dsh.js",
+    "lib/copy.js",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "LICENSE",
+    "locale/*.json",
+    "icon.svg"
+  ]
+}

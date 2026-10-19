@@ -1,0 +1,58 @@
+{
+  "name": "dsh-web-search-model",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Adds a model field to the dsh web search settings card. The stock page edits only apiKeyEnv, baseURL and maxUses, leaving the provider's model as a composition value with no UI entry point.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Zessi-C",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Zessi-C/dsh-plugins.git"
+  },
+  "homepage": "https://github.com/Zessi-C/dsh-plugins/tree/main/packages/dsh-web-search-model",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "web-search",
+    "settings"
+  ],
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ]
+    }
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "check-drift.py",
+    "README.md",
+    "README.zh.md",
+    "LICENSE",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.4"
+  }
+}

@@ -1,0 +1,961 @@
+window.__ModuleLoader__.load({
+  id: 'dsh-plugin-updater',
+  factory(require) {
+    const React = require('react')
+    const h = React.createElement
+
+    /** Dictionary namespace; must match the Host row's locale resources. */
+    const NS = 'plugin-updater'
+
+    /**
+     * Report ids the Host agent tool uses, mirrored here so a plan chosen on the
+     * page reads exactly like one the agent would build.
+     */
+    const LOCAL = (name) => `profile:${name}`
+
+    //#region dictionaries
+
+    const zh = {
+      tab: '插件更新',
+      refresh: '检查更新',
+      checking: '正在检查…',
+      refreshTip: '重新探测 npm registry、git 远端和 dsh 兼容范围',
+      'summary:total': '插件',
+      'summary:updates': '可更新',
+      'summary:blocked': '超出 dsh',
+      sectionUpdates: '可更新',
+      sectionBlocked: '版本不兼容',
+      sectionCurrent: '已是最新',
+      sectionLocal: '本地插件',
+      sectionBuiltin: '随 dsh 安装',
+      sectionError: '读取失败',
+      update: '更新',
+      'updateTo:one': '更新到',
+      accept: '接受风险',
+      acceptTitle: '记录精确版本豁免',
+      acceptBodyHead: '将在 profile 的 compatibility.json 中记录这条精确版本豁免：',
+      acceptBodyTail: '这只是在启动检查里放行，插件的代码是否真的适配由你判断；Harness 官方说明该操作可能导致崩溃或数据丢失。',
+      acceptConfirm: '记录豁免',
+      cancel: '取消',
+      apply: '应用所选',
+      applying: '正在应用…',
+      'selected:one': '已选',
+      applyDone: '应用完成',
+      reloadHint: '有些插件需要重启 dsh 才会加载新代码；重启前页面会保留原状态。',
+      colName: '插件',
+      colVersion: '已装',
+      colLatest: '最新',
+      colDsh: 'dsh 要求',
+      colActions: '操作',
+      latestCompatible: '可用',
+      noCompatible: '无兼容版本',
+      blockedLatestHead: '最新版不声明支持当前 dsh：',
+      upToDate: '已是最新',
+      local: '本地目录',
+      localLinked: '本地目录（link/file），不联网探测',
+      localStale: '源码比构建产物新，需要重新构建',
+      builtinNote: '随 dsh 一起升级',
+      requirements: '不满足的要求',
+      registry: 'registry',
+      gitRemote: 'git 远端',
+      gitHeadHead: '远端 HEAD',
+      errorNote: '读取失败',
+      clear: '清除全部豁免',
+      'clearDone:one': '已清除豁免数',
+      clearNone: '没有可清除的豁免',
+      empty: '没有已安装的第三方插件。',
+      unavailable: '插件管理器在此 profile 中不可用。',
+      noRemote: '浏览器端无法访问插件管理器服务。',
+      noRepair: '仅随 dsh 安装的插件：升级 dsh 本身即可。',
+      needsRestart: '需要重启 dsh',
+      appliedNow: '已生效',
+      failed: '失败',
+      notSelected: '未选择任何更新。',
+      progressTitle: '正在更新',
+      target: '目标',
+      searchPlaceholder: '筛选插件…',
+      showAll: '显示全部',
+      releaseChannel: '发布通道',
+    }
+
+    const en = {
+      tab: 'Plugin updates',
+      refresh: 'Check for updates',
+      checking: 'Checking…',
+      refreshTip: 'Probe the npm registry, git remotes and dsh requirement ranges again',
+      'summary:total': 'plugins',
+      'summary:updates': 'updates',
+      'summary:blocked': 'above dsh',
+      sectionUpdates: 'Updates',
+      sectionBlocked: 'Not compatible',
+      sectionCurrent: 'Up to date',
+      sectionLocal: 'Local plugins',
+      sectionBuiltin: 'Shipped with dsh',
+      sectionError: 'Unreadable',
+      update: 'Update',
+      'updateTo:one': 'Update to',
+      accept: 'Accept risk',
+      acceptTitle: 'Record an exact-version exemption',
+      acceptBodyHead: "Record in the profile's compatibility.json that this exact version may run on this dsh:",
+      acceptBodyTail: 'It only relaxes the startup check; whether the plugin code really fits is your judgement, and the Harness warns that running it may cause crashes or data loss.',
+      acceptConfirm: 'Record exemption',
+      cancel: 'Cancel',
+      apply: 'Apply selected',
+      applying: 'Applying…',
+      'selected:one': 'selected',
+      applyDone: 'Applied',
+      reloadHint: 'Some plugins load their new code only after dsh restarts.',
+      colName: 'Plugin',
+      colVersion: 'Installed',
+      colLatest: 'Latest',
+      colDsh: 'dsh requirement',
+      colActions: 'Actions',
+      latestCompatible: 'available',
+      noCompatible: 'none compatible',
+      blockedLatestHead: 'newest release does not declare this dsh:',
+      upToDate: 'Up to date',
+      local: 'Local',
+      localLinked: 'Local directory (link/file); not probed over the network',
+      localStale: 'Sources are newer than the build output; rebuild the package',
+      builtinNote: 'Updated with dsh',
+      requirements: 'Unmet requirements',
+      registry: 'registry',
+      gitRemote: 'git remote',
+      gitHeadHead: 'remote HEAD',
+      errorNote: 'Could not read',
+      clear: 'Clear all exemptions',
+      'clearDone:one': 'cleared exemptions',
+      clearNone: 'Nothing to clear',
+      empty: 'No third-party plugins are installed.',
+      unavailable: 'The plugin manager is unavailable in this profile.',
+      noRemote: 'The browser cannot reach the plugin manager service.',
+      noRepair: 'Shipped with dsh; update dsh itself.',
+      needsRestart: 'Restart dsh to load the new code',
+      appliedNow: 'Applied',
+      failed: 'Failed',
+      notSelected: 'Nothing was selected.',
+      progressTitle: 'Updating',
+      target: 'Target',
+      searchPlaceholder: 'Filter plugins…',
+      showAll: 'Show all',
+      releaseChannel: 'Release channel',
+    }
+
+    //#endregion
+
+    //#region styles
+
+    const CSS = `
+.pu-root{display:flex;flex-direction:column;gap:16px;padding:4px 0 24px;color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5}
+.pu-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.pu-spacer{flex:1}
+.pu-summary{color:var(--dsw-alias-label-secondary);font-size:12px}
+.pu-btn{appearance:none;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border-radius:8px;padding:5px 12px;font:inherit;font-size:12.5px;cursor:pointer;transition:background .12s,border-color .12s,opacity .12s}
+.pu-btn:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l2)}
+.pu-btn:disabled{opacity:.55;cursor:default}
+.pu-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.pu-btn-primary{background:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);color:#fff}
+.pu-btn-primary:hover:not(:disabled){background:var(--dsw-alias-brand-primary);opacity:.92}
+.pu-search{flex:0 0 200px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);border-radius:8px;padding:5px 10px;font:inherit;font-size:12.5px}
+.pu-search:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.pu-section{display:flex;flex-direction:column;gap:8px}
+.pu-section-head{display:flex;align-items:baseline;gap:8px;font-size:12px;font-weight:600;letter-spacing:.02em;color:var(--dsw-alias-label-secondary);text-transform:none}
+.pu-count{font-weight:400;color:var(--dsw-alias-state-idle-primary)}
+.pu-list{display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;overflow:hidden;background:var(--dsw-alias-bg-layer-1)}
+.pu-row{display:grid;grid-template-columns:24px minmax(150px,1.4fr) minmax(70px,.6fr) minmax(90px,.8fr) minmax(130px,1.4fr) auto;gap:10px;align-items:center;padding:9px 12px;border-top:1px solid var(--dsw-alias-border-l1)}
+.pu-row:first-child{border-top:none}
+.pu-row:hover{background:var(--dsw-alias-bg-layer-2)}
+.pu-head-row{background:transparent;font-size:11px;color:var(--dsw-alias-label-secondary);font-weight:600;padding-top:7px;padding-bottom:7px}
+.pu-head-row:hover{background:transparent}
+.pu-name{display:flex;flex-direction:column;gap:2px;min-width:0}
+.pu-name-title{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pu-name-pkg{font-size:11px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pu-mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
+.pu-dim{color:var(--dsw-alias-label-secondary)}
+.pu-badge{display:inline-flex;align-items:center;gap:5px;border-radius:999px;padding:1px 8px;font-size:11px;line-height:18px;white-space:nowrap;border:1px solid transparent}
+.pu-badge-update{background:rgba(35,134,54,.12);color:var(--dsw-alias-state-success-primary);border-color:rgba(35,134,54,.35)}
+.pu-badge-blocked{background:rgba(191,90,0,.12);color:var(--dsw-alias-state-warn-primary);border-color:rgba(191,90,0,.35)}
+.pu-badge-error{background:rgba(190,30,30,.12);color:var(--dsw-alias-state-error-primary);border-color:rgba(190,30,30,.35)}
+.pu-badge-muted{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);border-color:var(--dsw-alias-border-l1)}
+.pu-actions{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
+.pu-note{font-size:11px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pu-check{width:15px;height:15px;accent-color:var(--dsw-alias-brand-primary);cursor:pointer;margin:0}
+.pu-modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:1000;padding:24px}
+.pu-modal{background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l1);border-radius:14px;max-width:560px;width:100%;padding:20px;display:flex;flex-direction:column;gap:14px;box-shadow:0 18px 48px rgba(0,0,0,.35)}
+.pu-modal h3{margin:0;font-size:15px;font-weight:600}
+.pu-modal p{margin:0;font-size:13px;color:var(--dsw-alias-label-secondary);line-height:1.6}
+.pu-modal-foot{display:flex;justify-content:flex-end;gap:8px}
+.pu-progress{display:flex;flex-direction:column;gap:8px;max-height:280px;overflow:auto}
+.pu-progress-item{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;border-top:1px solid var(--dsw-alias-border-l1);padding-top:7px}
+.pu-progress-item:first-child{border-top:none;padding-top:0}
+.pu-empty{padding:18px;text-align:center;color:var(--dsw-alias-label-secondary);font-size:12.5px}
+.pu-error{color:var(--dsw-alias-state-error-primary);font-size:12px}
+@media (max-width:820px){.pu-row{grid-template-columns:24px 1fr auto;row-gap:6px}.pu-head-row{display:none}.pu-col-hide{display:none}}
+`
+
+    //#endregion
+
+    //#region helpers
+
+    /**
+     * Compare two versions. The Host half owns the authoritative semver engine;
+     * the browser only needs an ordering for display and for picking the newer
+     * of two releases, which this comparison covers.
+     */
+    function compareVersions(a, b) {
+      const parse = (value) => {
+        const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/.exec(String(value ?? ''))
+        return match === null ? undefined : { core: [Number(match[1]), Number(match[2]), Number(match[3])], pre: match[4] }
+      }
+      const left = parse(a)
+      const right = parse(b)
+      if (left === undefined || right === undefined) return 0
+      for (let index = 0; index < 3; index += 1) {
+        if (left.core[index] !== right.core[index]) return left.core[index] - right.core[index]
+      }
+      if (left.pre === undefined && right.pre === undefined) return 0
+      if (left.pre === undefined) return 1
+      if (right.pre === undefined) return -1
+      return left.pre < right.pre ? -1 : left.pre > right.pre ? 1 : 0
+    }
+
+    /**
+     * Whether a version satisfies a range, mirroring
+     * `semver.satisfies(v, r, { includePrerelease: true })` for the range forms
+     * package manifests use. The Host half answers this authoritatively for the
+     * report it serves the agent; the page needs it to decide what to offer.
+     */
+    function satisfies(version, range) {
+      if (typeof range !== 'string' || range.trim() === '') return true
+      return range
+        .split('||')
+        .map((part) => part.trim())
+        .filter((part) => part !== '')
+        .some((part) => satisfiesSet(version, part))
+    }
+
+    function satisfiesSet(version, range) {
+      const hyphen = /^(\S+)\s+-\s+(\S+)$/.exec(range)
+      if (hyphen !== null) return compareVersions(version, hyphen[1]) >= 0 && compareVersions(version, hyphen[2]) <= 0
+      let low = '0.0.0'
+      let lowExclusive = false
+      let high
+      let highExclusive = true
+      for (const token of range.split(/\s+/).filter((part) => part !== '')) {
+        const match = /^(\^|~|>=|>|<=|<|=)?\s*v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/.exec(token)
+        if (match === null) {
+          const loose = /^(\^|~)?\s*v?(\d+)(?:\.(\d+|[xX*]))?(?:\.(\d+|[xX*]))?$/.exec(token)
+          if (loose === null) continue
+          const operator = loose[1]
+          const major = Number(loose[2])
+          const looseMinor = loose[3] === undefined || /^[xX*]$/.test(loose[3])
+          const loosePatch = loose[4] === undefined || /^[xX*]$/.test(loose[4])
+          const minor = looseMinor ? 0 : Number(loose[3])
+          const patch = loosePatch ? 0 : Number(loose[4])
+          low = `${major}.${minor}.${patch}`
+          if (operator === '~') high = `${major}.${minor + 1}.0-0`
+          else if (operator === '^' || looseMinor) high = major > 0 ? `${major + 1}.0.0-0` : `0.${minor + 1}.0-0`
+          else if (loosePatch) high = `${major}.${minor + 1}.0-0`
+          else high = low
+          continue
+        }
+        const operator = match[1] ?? '='
+        const value = match[2]
+        if (operator === '<' || operator === '<=') {
+          high = value
+          highExclusive = operator === '<'
+          continue
+        }
+        if (operator === '>' || operator === '>=') {
+          if (compareVersions(value, low) > 0) {
+            low = value
+            lowExclusive = operator === '>'
+          }
+          continue
+        }
+        const [major, minor] = value.split('.').map(Number)
+        if (operator === '^') {
+          low = value
+          high = major > 0 ? `${major + 1}.0.0-0` : `0.${minor + 1}.0-0`
+        } else if (operator === '~') {
+          low = value
+          high = `${major}.${minor + 1}.0-0`
+        } else {
+          low = value
+          high = value
+          highExclusive = false
+        }
+      }
+      if (compareVersions(version, low) < 0) return false
+      if (lowExclusive && compareVersions(version, low) === 0) return false
+      if (high !== undefined) {
+        const order = compareVersions(version, high)
+        if (order > 0 || (order === 0 && highExclusive)) return false
+      }
+      return true
+    }
+
+    /** Reproduce the Host's dsh requirement rule for one manifest. */
+    function dshRequirements(manifest, runtime) {
+      const engines = manifest?.engines ?? {}
+      const peers = manifest?.peerDependencies ?? {}
+      const all = {}
+      const unmet = {}
+      if (typeof engines.dsh === 'string') {
+        all['engines.dsh'] = engines.dsh
+        if (!satisfies(runtime, engines.dsh)) unmet['engines.dsh'] = engines.dsh
+        return { all, unmet }
+      }
+      for (const [name, range] of Object.entries(peers)) {
+        if (name !== '@deepseek-ai/dsh' && !name.startsWith('@deepseek-ai/dsh-')) continue
+        if (typeof range !== 'string') continue
+        all[name] = range
+        const effective = ['workspace:^', 'workspace:~', 'workspace:*'].includes(range) ? runtime : range
+        if (!satisfies(runtime, effective)) unmet[name] = range
+      }
+      return { all, unmet }
+    }
+
+    /** Classify the dependency spec recorded in the profile manifest. */
+    function classifySpec(spec) {
+      const text = String(spec ?? '').trim()
+      if (text === '') return { kind: 'npm' }
+      if (/^(file:|link:|portal:|workspace:)/i.test(text)) return { kind: 'local' }
+      if (/^(github|gitlab|bitbucket):/i.test(text)) {
+        const [scheme, rest] = text.split(':', 2)
+        const [path, ref] = String(rest ?? '').split('#', 2)
+        return { kind: 'git', host: scheme, url: `https://${scheme}.com/${path}`, ref }
+      }
+      if (/^(git\+|git@|git:\/\/)/i.test(text) || /\.git(?:#|$)/.test(text)) return { kind: 'git', url: text }
+      if (/^https?:\/\//i.test(text)) return { kind: /\.tgz(?:#.*)?$/i.test(text) ? 'tarball' : 'git', url: text }
+      if (/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+(?:#.*)?$/.test(text)) {
+        const [path, ref] = text.split('#', 2)
+        return { kind: 'git', host: 'github', url: `https://github.com/${path}`, ref }
+      }
+      return { kind: 'npm' }
+    }
+
+    /** The https URL git and pnpm both accept. */
+    function normaliseGitUrl(url) {
+      let text = String(url ?? '')
+      if (text.startsWith('github:')) text = `https://github.com/${text.slice(7)}`
+      if (/^git@([^:]+):/.test(text)) text = text.replace(/^git@([^:]+):/, 'https://$1/')
+      if (text.startsWith('git+')) text = text.slice(4)
+      return text.replace(/#.*$/, '').replace(/\.git$/, '')
+    }
+
+    /** Fetch JSON with a timeout. */
+    async function fetchJson(url, options = {}) {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 15000)
+      try {
+        const response = await fetch(url, { headers: options.headers, signal: controller.signal })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        return await response.json()
+      } finally {
+        clearTimeout(timer)
+      }
+    }
+
+    /** The registries to ask: the manager's view first, then the official one. */
+    async function registryCandidates(ctx) {
+      const found = []
+      try {
+        const answer = await ctx.remote.pluginManager.registries()
+        if (answer?.ok === true) {
+          if (typeof answer.value.resolved === 'string') found.push(answer.value.resolved)
+          for (const registry of answer.value.fallbackRegistries ?? []) found.push(registry)
+          if (typeof answer.value.registry === 'string') found.push(answer.value.registry)
+        }
+      } catch {
+        /* fall back to the official registry */
+      }
+      found.push('https://registry.npmjs.org/')
+      return [...new Set(found.filter((entry) => typeof entry === 'string' && entry !== '').map((entry) => `${entry.replace(/\/+$/, '')}/`))]
+    }
+
+    /** Read a package's registry document from the first registry that answers. */
+    async function packument(registries, packageName) {
+      const encoded = packageName.startsWith('@') ? `@${encodeURIComponent(packageName.slice(1))}` : encodeURIComponent(packageName)
+      for (const registry of registries) {
+        try {
+          const document = await fetchJson(`${registry}${encoded}`, { headers: { accept: 'application/vnd.npm.install-json, application/json' } })
+          if (document !== null && typeof document.versions === 'object') return { ...document, registry }
+        } catch {
+          /* try the next registry */
+        }
+      }
+      return undefined
+    }
+
+    /** True when both versions name the same commit prefix. */
+    function sameCommit(a, b) {
+      if (typeof a !== 'string' || typeof b !== 'string') return false
+      const short = (value) => value.slice(0, 7)
+      return short(a) === short(b)
+    }
+
+    /** The head commit a recorded spec already pins, when it pins one. */
+    function pinnedCommit(spec) {
+      const match = /#([0-9a-f]{7,40})$/.exec(String(spec ?? ''))
+      return match === null ? undefined : match[1]
+    }
+
+    //#endregion
+
+    //#region controller
+
+    /** One scan of the profile's plugins, exactly as the page lists them. */
+    async function scanProfile(ctx, runtime, isCurrent) {
+      const remote = ctx.remote?.pluginManager
+      if (remote === undefined) throw new Error('no remote')
+      const [bundlesAnswer, pluginsAnswer] = await Promise.all([remote.listBundles(), remote.listPlugins()])
+      if (bundlesAnswer?.ok !== true || pluginsAnswer?.ok !== true) throw new Error('list failed')
+      const bundles = bundlesAnswer.value
+      const registries = await registryCandidates(ctx)
+      const entries = await Promise.all(
+        bundles.map(async (bundle) => {
+          const shipped = bundle.availability === 'installation'
+          const base = {
+            id: shipped ? `builtin:${bundle.name}` : bundle.availability === 'profile' ? LOCAL(bundle.name) : `${bundle.availability}:${bundle.name}`,
+            name: bundle.name,
+            title: resolveTitle(bundle),
+            version: bundle.version,
+            spec: bundle.source,
+            enabled: bundle.enabled,
+            builtin: shipped,
+            installed: bundle.availability === 'profile' && bundle.installed === true,
+            rows: bundle.rows ?? [],
+          }
+          if (shipped) return { ...base, kind: 'builtin', status: 'builtin', dsh: { ok: true, requirements: {} }, probe: { status: 'ok', note: '' } }
+          if (!base.installed) return { ...base, kind: 'missing', status: 'error', dsh: { ok: true, requirements: {} }, probe: { status: 'error', note: 'not installed' } }
+          const parsed = classifySpec(bundle.source)
+          const kind = parsed.kind
+          let manifest
+          if (parsed.host === 'github' || kind === 'git') {
+            // The manifest of a git plugin is not on the profile's disk in a
+            // comparable form; the probe below compares versions from the remote.
+            manifest = undefined
+          }
+          const requirements = dshRequirements(manifest ?? {}, runtime)
+          const dshOk = Object.keys(requirements.unmet).length === 0
+          if (kind === 'local') {
+            return { ...base, kind, status: dshOk ? 'local' : 'incompatible', dsh: { ok: dshOk, requirements: requirements.unmet }, probe: { status: 'ok', note: 'local' } }
+          }
+          return { ...base, kind, status: 'checking', dsh: { ok: dshOk, requirements: requirements.unmet }, probe: { status: 'pending' }, parsed }
+        }),
+      )
+      // Probe every npm and git plugin; discard results from a superseded scan.
+      await Promise.all(
+        entries.map(async (entry) => {
+          if (entry.parsed === undefined) return
+          const parsed = entry.parsed
+          if (parsed.kind === 'npm') {
+            const document = await packument(registries, entry.name)
+            if (document === undefined) {
+              entry.probe = { status: 'error', note: 'no registry answered' }
+            } else {
+              const releases = Object.keys(document.versions)
+                .map((version) => {
+                  const facts = dshRequirements(document.versions[version] ?? {}, runtime)
+                  return { version, deprecated: typeof document.versions[version]?.deprecated === 'string', dshOk: Object.keys(facts.unmet).length === 0 }
+                })
+                .sort((a, b) => compareVersions(a.version, b.version))
+              const newer = releases.filter((release) => !release.deprecated && compareVersions(release.version, entry.version) > 0)
+              const compatible = newer.filter((release) => release.dshOk)
+              const blocked = newer.filter((release) => !release.dshOk)
+              entry.probe = {
+                status: 'ok',
+                registry: document.registry,
+                latest: document['dist-tags']?.latest,
+                compatibleLatest: compatible.length === 0 ? undefined : compatible[compatible.length - 1].version,
+                blockedLatest: blocked.length === 0 ? undefined : blocked[blocked.length - 1].version,
+                requirements: blocked.length === 0 ? undefined : blocked[blocked.length - 1].requirements,
+              }
+              entry.hasUpdate = compatible.length > 0
+            }
+            return
+          }
+          // A git plugin: only the recorded commit is available without the Host,
+          // so the page reports the remote's identity rather than inventing one.
+          entry.probe = { status: 'ok', url: normaliseGitUrl(parsed.url), pinned: pinnedCommit(entry.spec) }
+          entry.hasUpdate = false
+        }),
+      )
+      if (!isCurrent()) return undefined
+      for (const entry of entries) {
+        if (entry.builtin) continue
+        if (entry.probe.status === 'error') {
+          entry.status = 'error'
+          continue
+        }
+        if (!entry.dsh.ok) {
+          entry.status = entry.probe.blockedLatest === undefined ? 'incompatible' : 'incompatible-update'
+          continue
+        }
+        if (entry.hasUpdate === true || (entry.kind === 'git' && entry.parsed?.pinned === undefined && entry.probe?.url !== undefined)) {
+          entry.status = 'update'
+          continue
+        }
+        entry.status = entry.kind === 'local' ? 'local' : 'current'
+        if (entry.kind === 'git' && entry.parsed?.pinned !== undefined) entry.status = 'current'
+      }
+      return { runtime, registries, entries, scannedAt: new Date().toISOString() }
+    }
+
+    /** Localised display text from a bundle's meta block. */
+    function resolveTitle(bundle) {
+      const title = bundle?.meta?.title
+      if (typeof title === 'string') return title
+      if (title !== null && typeof title === 'object') return title?.zh ?? title?.['zh-CN'] ?? title?.en ?? bundle.name
+      return bundle.name
+    }
+
+    /** Compact components the page is built from. */
+    function Badge(props) {
+      return h('span', { className: `pu-badge pu-badge-${props.tone}` }, props.children)
+    }
+
+    function Section(props) {
+      if (props.entries.length === 0) return null
+      return h(
+        'section',
+        { className: 'pu-section' },
+        h('div', { className: 'pu-section-head' }, props.title, h('span', { className: 'pu-count' }, String(props.entries.length))),
+        h('div', { className: 'pu-list' }, props.entries.map(props.render)),
+      )
+    }
+
+    /**
+     * The Plugins page tab. It renders its own content into the page's tab body,
+     * so every control and row is drawn here; the page keeps the header and tabs.
+     */
+    function PluginUpdaterTab(props) {
+      const { t, ctx } = props
+      const [state, setState] = React.useState({ phase: 'idle', report: null, selected: {}, notice: null, applied: [] })
+      const [query, setQuery] = React.useState('')
+      const [pending, setPending] = React.useState(null)
+      const [progress, setProgress] = React.useState(null)
+      const scanId = React.useRef(0)
+
+      const runScan = React.useCallback(async () => {
+        const mine = ++scanId.current
+        setState((current) => ({ ...current, phase: 'checking', notice: null }))
+        try {
+          const runtime = await hostRuntime(ctx)
+          const report = await scanProfile(ctx, runtime, () => scanId.current === mine)
+          if (report === undefined || scanId.current !== mine) return
+          setState((current) => ({ ...current, phase: 'ready', report }))
+        } catch (error) {
+          if (scanId.current !== mine) return
+          setState((current) => ({ ...current, phase: 'error', notice: String(error?.message ?? error) }))
+        }
+      }, [ctx])
+
+      React.useEffect(() => {
+        void runScan()
+      }, [runScan])
+
+      const toggle = React.useCallback((id) => {
+        setState((current) => {
+          const selected = { ...current.selected }
+          if (selected[id] === undefined) selected[id] = { accept: false }
+          else delete selected[id]
+          return { ...current, selected }
+        })
+      }, [])
+
+      const report = state.report
+      const entries = report?.entries ?? []
+      const filtered = query.trim() === '' ? entries : entries.filter((entry) => `${entry.name} ${entry.title}`.toLowerCase().includes(query.trim().toLowerCase()))
+      const groups = {
+        updates: filtered.filter((entry) => entry.status === 'update'),
+        blocked: filtered.filter((entry) => entry.status === 'incompatible' || entry.status === 'incompatible-update'),
+        local: filtered.filter((entry) => entry.status === 'local'),
+        current: filtered.filter((entry) => entry.status === 'current'),
+        builtin: filtered.filter((entry) => entry.status === 'builtin'),
+        error: filtered.filter((entry) => entry.status === 'error'),
+      }
+      const selectedIds = Object.keys(state.selected)
+      const busy = state.phase === 'applying'
+
+      /** Carry out the chosen plan through the plugin manager's own API. */
+      const applySelected = React.useCallback(async () => {
+        if (selectedIds.length === 0) {
+          setState((current) => ({ ...current, notice: t('notSelected') }))
+          return
+        }
+        const plan = selectedIds.map((id) => {
+          const entry = entries.find((candidate) => candidate.id === id)
+          return { entry, accept: state.selected[id]?.accept === true }
+        })
+        setState((current) => ({ ...current, phase: 'applying', notice: null }))
+        setProgress([])
+        const outcomes = []
+        for (const item of plan) {
+          if (item.entry === undefined) continue
+          setProgress((current) => [...(current ?? []), { name: item.entry.name, phase: 'running' }])
+          const outcome = await moveOne(ctx, t, item.entry, item.accept)
+          outcomes.push({ name: item.entry.name, ...outcome })
+          setProgress((current) => (current ?? []).map((row) => (row.name === item.entry.name ? { name: row.name, phase: outcome.ok ? 'done' : 'failed', detail: outcome.message } : row)))
+        }
+        setPending(null)
+        setState((current) => ({ ...current, phase: 'ready', selected: {}, applied: outcomes }))
+        await runScan()
+      }, [ctx, entries, runScan, selectedIds, state.selected, t])
+
+      const requestApply = React.useCallback(
+        (id, entry) => {
+          const needsConsent = entry === undefined ? false : !entry.dsh.ok
+          if (needsConsent) {
+            setPending({ kind: 'accept', id, entry })
+            return
+          }
+          setPending({ kind: 'confirm', id, entry })
+        },
+        [],
+      )
+
+      const confirmPending = React.useCallback(async () => {
+        if (pending === null) return
+        const entry = pending.entry
+        const accept = pending.kind === 'accept'
+        setPending(null)
+        setState((current) => ({ ...current, phase: 'applying', selected: {} }))
+        setProgress([{ name: entry.name, phase: 'running' }])
+        const outcome = await moveOne(ctx, t, entry, accept)
+        setProgress([{ name: entry.name, phase: outcome.ok ? 'done' : 'failed', detail: outcome.message }])
+        setState((current) => ({ ...current, phase: 'ready', applied: [{ name: entry.name, ...outcome }] }))
+        await runScan()
+      }, [ctx, pending, runScan, t])
+
+      const clearExemptions = React.useCallback(async () => {
+        const answer = await clearAllExemptions(ctx)
+        setState((current) => ({ ...current, notice: (answer.removed ?? 0) === 0 ? t('clearNone') : `${t('clearDone:one')} ${answer.removed}` }))
+        await runScan()
+      }, [ctx, runScan, t])
+
+      /**
+       * The version shown in the "latest" column: the release the page would
+       * install. Rows with nothing newer show the installed version instead of
+       * the registry's latest, which may legitimately be older or incompatible.
+       */
+      const latestText = (entry) => {
+        if (entry.kind === 'builtin') return entry.version ?? '—'
+        if (entry.status === 'local') return t('local')
+        if (entry.status === 'update' && entry.probe?.compatibleLatest !== undefined) return entry.probe.compatibleLatest
+        if (entry.status === 'incompatible-update' && entry.probe?.blockedLatest !== undefined) return entry.probe.blockedLatest
+        return entry.version ?? '—'
+      }
+
+      /** The requirement summary shown for one row. */
+      const requirementText = (entry) => {
+        const unmet = entry.dsh?.requirements ?? {}
+        const names = Object.keys(unmet)
+        if (names.length === 0) return t('upToDate')
+        return `${names[0]} ${unmet[names[0]]}`
+      }
+
+      const row = (entry) => {
+        const selectable = entry.status === 'update' || entry.status === 'incompatible' || entry.status === 'incompatible-update'
+        const checked = state.selected[entry.id] !== undefined
+        return h(
+          'div',
+          { className: 'pu-row', key: entry.id },
+          selectable
+            ? h('input', {
+                type: 'checkbox',
+                className: 'pu-check',
+                checked,
+                disabled: busy,
+                'aria-label': `${t('colName')}: ${entry.title}`,
+                onChange: () => toggle(entry.id),
+              })
+            : h('span', { 'aria-hidden': 'true' }),
+          h(
+            'div',
+            { className: 'pu-name' },
+            h('span', { className: 'pu-name-title', title: entry.title }, entry.title),
+            h('span', { className: 'pu-name-pkg pu-mono', title: entry.spec ?? entry.name }, entry.name),
+          ),
+          h('span', { className: 'pu-mono' }, entry.version ?? '—'),
+          h('span', { className: 'pu-monout pu-mono' }, latestText(entry)),
+          h(
+            'span',
+            { className: 'pu-col-hide' },
+            entry.dsh?.ok === false
+              ? h(Badge, { tone: 'blocked' }, requirementText(entry))
+              : h('span', { className: 'pu-dim' }, requirementText(entry)),
+          ),
+          h(
+            'div',
+            { className: 'pu-actions' },
+            entry.status === 'update'
+              ? h('button', { type: 'button', className: 'pu-btn pu-btn-primary', disabled: busy, onClick: () => requestApply(entry.id, entry) }, `${t('updateTo:one')} ${latestText(entry)}`)
+              : null,
+            entry.status === 'incompatible-update'
+              ? h('button', { type: 'button', className: 'pu-btn pu-btn-primary', disabled: busy, onClick: () => requestApply(entry.id, entry) }, `${t('updateTo:one')} ${latestText(entry)}`)
+              : null,
+            entry.status === 'incompatible' || entry.status === 'incompatible-update'
+              ? h('button', { type: 'button', className: 'pu-btn', disabled: busy, onClick: () => requestApply(entry.id, entry) }, t('accept'))
+              : null,
+            entry.status === 'builtin' ? h('span', { className: 'pu-dim pu-note' }, t('builtinNote')) : null,
+          ),
+        )
+      }
+
+      const header = h(
+        'div',
+        { className: 'pu-bar' },
+        h(
+          'button',
+          { type: 'button', className: 'pu-btn', disabled: busy || state.phase === 'checking', title: t('refreshTip'), onClick: () => void runScan() },
+          state.phase === 'checking' ? t('checking') : t('refresh'),
+        ),
+        h('input', { className: 'pu-search', type: 'search', placeholder: t('searchPlaceholder'), value: query, onChange: (event) => setQuery(event.target.value) }),
+        h('button', { type: 'button', className: 'pu-btn', disabled: busy, onClick: () => void clearExemptions() }, t('clear')),
+        h('span', { className: 'pu-spacer' }),
+        report === null
+          ? null
+          : h(
+              'span',
+              { className: 'pu-summary' },
+              `${entries.length} ${t('summary:total')} · ${groups.updates.length} ${t('summary:updates')} · ${groups.blocked.length} ${t('summary:blocked')} dsh ${report.runtime} · ${new Date(report.scannedAt).toLocaleTimeString()}`,
+            ),
+        selectedIds.length === 0
+          ? null
+          : h(
+              'button',
+              { type: 'button', className: 'pu-btn pu-btn-primary', disabled: busy, onClick: () => void applySelected() },
+              busy ? t('applying') : `${t('apply')} · ${selectedIds.length} ${t('selected:one')}`,
+            ),
+      )
+
+      const body = () => {
+        if (state.phase === 'checking' && report === null) return h('div', { className: 'pu-empty' }, t('checking'))
+        if (state.phase === 'error') return h('div', { className: 'pu-error' }, state.notice ?? t('noRemote'))
+        if (report === null) return null
+        if (entries.length === 0) return h('div', { className: 'pu-empty' }, t('empty'))
+        return h(
+          React.Fragment,
+          null,
+          h(Section, { title: t('sectionUpdates'), entries: groups.updates, render: row }),
+          h(Section, { title: t('sectionBlocked'), entries: groups.blocked, render: row }),
+          h(Section, { title: t('sectionLocal'), entries: groups.local, render: row }),
+          h(Section, { title: t('sectionCurrent'), entries: groups.current, render: row }),
+          h(Section, { title: t('sectionError'), entries: groups.error, render: row }),
+          h(Section, { title: t('sectionBuiltin'), entries: groups.builtin, render: row }),
+          state.notice === null ? null : h('div', { className: 'pu-note' }, state.notice),
+        )
+      }
+
+      const modal =
+        pending === null
+          ? null
+          : h(
+              'div',
+              { className: 'pu-modal-backdrop', role: 'presentation', onClick: (event) => event.target === event.currentTarget && setPending(null) },
+              h(
+                'div',
+                { className: 'pu-modal', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'pu-modal-title' },
+                h('h3', { id: 'pu-modal-title' }, pending.kind === 'accept' ? t('acceptTitle') : `${t('updateTo:one')} ${latestText(pending.entry)}`),
+                pending.kind === 'accept'
+                  ? h('p', null, `${t('acceptBodyHead')} ${pending.entry.name}@${pending.entry.version} → dsh ${report?.runtime ?? ''}。${t('acceptBodyTail')}`)
+                  : h('p', null, pending.entry.name),
+                h(
+                  'div',
+                  { className: 'pu-modal-foot' },
+                  h('button', { type: 'button', className: 'pu-btn', onClick: () => setPending(null) }, t('cancel')),
+                  h('button', { type: 'button', className: 'pu-btn pu-btn-primary', onClick: () => void confirmPending() }, pending.kind === 'accept' ? t('acceptConfirm') : t('update')),
+                ),
+              ),
+            )
+
+      const progressPanel =
+        progress === null
+          ? null
+          : h(
+              'div',
+              { className: 'pu-modal-backdrop' },
+              h(
+                'div',
+                { className: 'pu-modal', role: 'status' },
+                h('h3', null, t('progressTitle')),
+                h(
+                  'div',
+                  { className: 'pu-progress' },
+                  progress.map((item) =>
+                    h(
+                      'div',
+                      { className: 'pu-progress-item', key: item.name },
+                      h('span', null, item.name),
+                      h(
+                        'span',
+                        { className: item.phase === 'failed' ? 'pu-error' : 'pu-dim' },
+                        item.phase === 'running' ? t('applying') : item.phase === 'failed' ? item.detail ?? t('failed') : item.detail ?? t('applyDone'),
+                      ),
+                    ),
+                  ),
+                ),
+                state.phase === 'applying'
+                  ? null
+                  : h(
+                      'div',
+                      { className: 'pu-modal-foot' },
+                      h('button', { type: 'button', className: 'pu-btn', onClick: () => setProgress(null) }, t('cancel')),
+                    ),
+              ),
+            )
+
+      return h(
+        'div',
+        { className: 'pu-root' },
+        header,
+        body(),
+        modal,
+        progressPanel,
+        report === null || (groups.updates.length === 0 && groups.blocked.length === 0) ? null : h('div', { className: 'pu-note' }, t('reloadHint')),
+      )
+    }
+
+    /**
+     * The running dsh version, read from the page's own boot facts.
+     *
+     * The Client build writes the runtime version into the boot payload, so the
+     * page compares declared ranges against exactly the version that would
+     * enforce them. When that is unavailable the values are simply left unknown
+     * and the page says so instead of guessing.
+     */
+    let RUNTIME_VERSION = ''
+    function hostRuntime(ctx) {
+      if (RUNTIME_VERSION !== '') return Promise.resolve(RUNTIME_VERSION)
+      const facts = readBootFacts()
+      RUNTIME_VERSION = facts === undefined ? 'unknown' : facts
+      return Promise.resolve(RUNTIME_VERSION)
+    }
+
+    /**
+     * Read `window.__DSH_BOOT__.release.version`, the Host release label the
+     * module graph publishes when the Host reports one.
+     * @returns the version label, or undefined when the boot payload omits it.
+     */
+    function readBootFacts() {
+      try {
+        const release = typeof window !== 'undefined' ? window.__DSH_BOOT__?.release : undefined
+        return typeof release?.version === 'string' && release.version !== '' ? release.version : undefined
+      } catch {
+        return undefined
+      }
+    }
+
+    /**
+     * Carry out one plugin's move through the plugin manager's own API.
+     *
+     * update      — reinstall from the newest compatible release (npm) or the
+     *               recorded remote (git).
+     * incompatible — install a release the registry declares compatible, or,
+     *               with `accept`, record the exact-version exemption.
+     */
+    async function moveOne(ctx, t, entry, accept) {
+      const remote = ctx.remote.pluginManager
+      if (accept === true && (entry.status === 'incompatible' || entry.status === 'incompatible-update')) {
+        try {
+          const answer = await remote.setVersionExemption(`${entry.name}@${entry.version}`, RUNTIME_VERSION, true, true)
+          if (answer?.ok === false) return { ok: false, message: answer.error?.code ?? 'failed' }
+          return { ok: true, message: t('appliedNow') }
+        } catch (error) {
+          return { ok: false, message: String(error?.message ?? error) }
+        }
+      }
+      const target = entry.probe?.compatibleLatest ?? undefined
+      if (entry.kind === 'git') {
+        const spec = normaliseGitUrl(entry.probe?.url ?? entry.spec)
+        return reinstallBundle(ctx, t, entry, spec)
+      }
+      if (target === undefined) return { ok: false, message: t('noCompatible') }
+      return reinstallBundle(ctx, t, entry, `${entry.name}@${target}`)
+    }
+
+    /** Replace one installed bundle with an exact spec, keeping rows and enablement. */
+    async function reinstallBundle(ctx, t, entry, spec) {
+      const remote = ctx.remote.pluginManager
+      try {
+        const removed = await remote.removeBundle(entry.name)
+        if (removed?.ok === false && removed.error?.code !== 'stop-profile') return { ok: false, message: removed.error?.code ?? t('failed') }
+        const installed = await remote.installBundle(spec, { enabled: entry.enabled !== false, saveExact: true })
+        if (installed?.ok === false) return { ok: false, message: installed.error?.code ?? t('failed') }
+        const pendingBuilds = installed?.pendingBuilds
+        if (Array.isArray(pendingBuilds) && pendingBuilds.length > 0) return { ok: false, message: `build scripts blocked: ${pendingBuilds.join(', ')}` }
+        const application = installed?.application
+        return {
+          ok: application !== 'failed',
+          message: application === 'restart-required' ? t('needsRestart') : t('appliedNow'),
+        }
+      } catch (error) {
+        return { ok: false, message: String(error?.message ?? error) }
+      }
+    }
+
+    /** Remove every exemption the profile records for this runtime. */
+    async function clearAllExemptions(ctx) {
+      const remote = ctx.remote.pluginManager
+      try {
+        const answer = await remote.listVersionExemptions()
+        if (answer?.ok !== true) return { removed: 0 }
+        let removed = 0
+        for (const [key, versions] of Object.entries(answer.value.exemptions ?? {})) {
+          for (const version of versions ?? []) {
+            if (version !== RUNTIME_VERSION) continue
+            const result = await remote.setVersionExemption(key, version, false)
+            if (result?.ok !== false) removed += 1
+          }
+        }
+        return { removed }
+      } catch {
+        return { removed: 0 }
+      }
+    }
+
+    //#endregion
+
+    const inject = ['slots', 'locale', 'remote', 'remote.pluginManager']
+
+    function apply(ctx) {
+      ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-plugin-updater: dictionaries')
+      const t = ctx.locale.bind(NS)
+      const disposers = []
+      const styleTags = new Set()
+      const installStyles = () => {
+        if (typeof document === 'undefined') return () => undefined
+        const tag = document.createElement('style')
+        tag.setAttribute('data-dyn', 'dsh-plugin-updater')
+        tag.textContent = CSS
+        document.head.appendChild(tag)
+        styleTags.add(tag)
+        return () => {
+          styleTags.delete(tag)
+          tag.remove()
+        }
+      }
+      disposers.push(installStyles())
+      ctx.effect(() => () => {
+        for (const dispose of disposers.splice(0)) dispose()
+      }, 'dsh-plugin-updater: styles')
+
+      ctx.slots.inject('plugins.tab', () =>
+        ctx.slots.register(
+          {
+            name: 'plugins.tab',
+            id: 'updater',
+            order: 20,
+            label: () => t('tab'),
+            locale: NS,
+          },
+          (props) => h(PluginUpdaterTab, { ...props, t, ctx }),
+        ),
+      )
+    }
+
+    return { name: 'dsh-plugin-updater', inject, apply }
+  },
+})

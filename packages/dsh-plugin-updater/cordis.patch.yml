@@ -1,0 +1,12 @@
+# Patch layer contributed by dsh-plugin-updater.
+#
+# One Host row carries the whole update engine (inventory, npm/git probing, dsh
+# compatibility scan, applying updates) plus the `plugin_update` agent tool.
+# The browser half declared under `dsh.client` only renders the Plugins-page tab;
+# dsh-client-modules reaches it because this row is an enabled Loader entry.
+#
+# Config is optional: every field has a working default. Override any of them in
+# the profile's own cordis.patch.yml by adding another row with the same id.
+- insert:
+    - id: plugin-updater
+      name: 'dsh-plugin-updater'

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Search Model Field",
+    "description": "Adds a model field to the dsh web search settings card, which otherwise edits only the key, endpoint and search count."
+  }
+}
