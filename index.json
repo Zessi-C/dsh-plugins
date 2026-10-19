@@ -1,0 +1,147 @@
+{
+  "format": 1,
+  "name": "Zessi-C dsh plugins",
+  "title": {
+    "en": "Zessi-C dsh plugins",
+    "zh": "Zessi-C 的 dsh 插件"
+  },
+  "description": "Self-authored dsh plugins kept in one repository.",
+  "metadata": {
+    "categories": {},
+    "labels": {},
+    "sortKeys": {}
+  },
+  "plugins": [
+    {
+      "name": "dsh-plugin-updater",
+      "title": {
+        "en": "Plugin Updates",
+        "zh": "插件更新"
+      },
+      "description": {
+        "en": "Checks installed dsh plugins for newer versions, git-remote updates, and versions that no longer satisfy the running dsh, then applies the ones you choose.",
+        "zh": "检测已安装 dsh 插件的新版本、git 远端更新以及与当前 dsh 版本不兼容的插件，并按你的选择执行更新。"
+      },
+      "author": "Zessi-C",
+      "homepage": "https://github.com/Zessi-C/dsh-plugins/tree/main/packages/dsh-plugin-updater",
+      "repository": {
+        "url": "https://github.com/Zessi-C/dsh-plugins.git",
+        "directory": "packages/dsh-plugin-updater"
+      },
+      "metadata": {
+        "keywords": [
+          "dsh",
+          "dsh-plugin",
+          "deepseek-harness",
+          "plugin-update",
+          "self-update"
+        ],
+        "labels": [],
+        "sortKeys": {}
+      },
+      "versions": [
+        {
+          "version": "0.1.1",
+          "publishTimestamp": 1792429856,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/Zessi-C/dsh-plugins.git",
+            "commit": "254850f2c41ce7a44c6edda46e291bf1acf2cfa0",
+            "path": "packages/dsh-plugin-updater"
+          },
+          "engines": {
+            "dsh": "*"
+          }
+        }
+      ]
+    },
+    {
+      "name": "dsh-vibe-orchestrator",
+      "title": {
+        "en": "Vibe Orchestrator",
+        "zh": "Vibe 编排器"
+      },
+      "description": {
+        "en": "Vibe mode: the conversation becomes a read-only orchestrator that routes work to fast, good and expert subagents.",
+        "zh": "Vibe 模式：主对话变为只读编排者，把工作分派给快速、优秀、专家三档子代理。"
+      },
+      "author": "Zessi-C",
+      "homepage": "https://github.com/Zessi-C/dsh-plugins/tree/main/packages/dsh-vibe-orchestrator",
+      "repository": {
+        "url": "https://github.com/Zessi-C/dsh-plugins.git",
+        "directory": "packages/dsh-vibe-orchestrator"
+      },
+      "metadata": {
+        "keywords": [
+          "dsh",
+          "dsh-plugin",
+          "deepseek-harness",
+          "orchestrator",
+          "subagent",
+          "multi-agent",
+          "vibe"
+        ],
+        "labels": [],
+        "sortKeys": {}
+      },
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1792427543,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/Zessi-C/dsh-plugins.git",
+            "commit": "5c12ca7b24a8dbf14c8ef5aef3f9c8eb655bf487",
+            "path": "packages/dsh-vibe-orchestrator"
+          },
+          "engines": {
+            "dsh": "*"
+          }
+        }
+      ]
+    },
+    {
+      "name": "dsh-web-search-model",
+      "title": {
+        "en": "Search Model Field",
+        "zh": "搜索模型字段"
+      },
+      "description": {
+        "en": "Adds a model field to the dsh web search settings card, which otherwise edits only the key, endpoint and search count.",
+        "zh": "给 dsh 网页搜索设置卡补上模型字段；官方卡片只编辑密钥、端点与搜索次数。"
+      },
+      "author": "Zessi-C",
+      "homepage": "https://github.com/Zessi-C/dsh-plugins/tree/main/packages/dsh-web-search-model",
+      "repository": {
+        "url": "https://github.com/Zessi-C/dsh-plugins.git",
+        "directory": "packages/dsh-web-search-model"
+      },
+      "metadata": {
+        "keywords": [
+          "dsh",
+          "dsh-plugin",
+          "deepseek-harness",
+          "web-search",
+          "settings"
+        ],
+        "labels": [],
+        "sortKeys": {}
+      },
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1792427543,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/Zessi-C/dsh-plugins.git",
+            "commit": "5c12ca7b24a8dbf14c8ef5aef3f9c8eb655bf487",
+            "path": "packages/dsh-web-search-model"
+          },
+          "engines": {
+            "dsh": "*"
+          }
+        }
+      ]
+    }
+  ]
+}
