@@ -188,6 +188,23 @@ export const Config =
       })
 
 
+/**
+ * Whether a string is a valid semantic version.
+ * @param {string} value - Candidate version.
+ * @returns {boolean} Whether it parses as one.
+ */
+export function isVersion(value) {
+  if (typeof value !== 'string' || value.trim() === '') return false
+  if (semver !== undefined) {
+    try {
+      return semver.valid(value) !== null
+    } catch {
+      return false
+    }
+  }
+  return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(value)
+}
+
 /** Compare two versions with SemVer precedence, tolerating the unknown. */
 function compareVersions(a, b) {
   if (semver !== undefined) {
@@ -645,7 +662,68 @@ class Updater {
         }
       }
     }
-    return { kind: 'git', status: 'unknown', url, head, note: 'the head commit was read; the manifest there is not public, so no version is compared' }
+    // A private repository exposes no public raw file, so the version is read
+    // from the package's release tag: `<package>-v<version>`. Publishing one with
+    // every release keeps version comparison working without cloning anything.
+    const tag = await this.probeGitTag(record, url, signal)
+    if (tag !== undefined) return tag
+    return {
+      kind: 'git',
+      status: 'unknown',
+      url,
+      head,
+      pinned: head,
+      note: 'the head commit was read; the manifest is private and no release tag exists, so the version is compared by commit rather than by number',
+      hasUpdate: this.commitMoved(record.spec, head),
+    }
+  }
+
+  /**
+   * Read a package's newest release tag from the remote.
+   * @param {object} record - Inventory record.
+   * @param {string} url - Repository URL.
+   * @param {AbortSignal} [signal] - Cancellation.
+   * @returns {Promise<object | undefined>} A probe result, or undefined when the remote carries no tags.
+   */
+  async probeGitTag(record, url, signal) {
+    const listed = await this.run(['git', 'ls-remote', '--tags', url], { signal })
+    if (listed.code !== 0) return undefined
+    const prefix = `${record.name}-v`
+    const releases = listed.output
+      .split('\n')
+      .map((line) => line.trim().split(/\s+/))
+      .filter((parts) => parts.length === 2 && parts[1].startsWith(`refs/tags/${prefix}`) && !parts[1].endsWith('^{}'))
+      .map((parts) => ({ version: parts[1].slice(`refs/tags/${prefix}`.length), commit: parts[0] }))
+      .filter((release) => isVersion(release.version))
+      .sort((a, b) => compareVersions(a.version, b.version))
+    if (releases.length === 0) return undefined
+    const newest = releases[releases.length - 1]
+    const parsed = classifySpec(record.spec)
+    const pinned = typeof parsed.ref === 'string' && /^[0-9a-f]{7,40}$/.test(parsed.ref) ? parsed.ref : undefined
+    return {
+      kind: 'git',
+      status: 'ok',
+      url,
+      latest: newest.version,
+      tag: `${prefix}${newest.version}`,
+      head: newest.commit,
+      hasUpdate: compareVersions(newest.version, record.version) > 0,
+      pinned,
+      note: '',
+    }
+  }
+
+  /**
+   * Whether the recorded spec survives the remote head and, when it names a
+   * commit, whether that commit is still the head.
+   * @param {string} spec - Recorded dependency spec.
+   * @param {string} head - Remote head commit.
+   * @returns {boolean} Whether the installation is behind the remote.
+   */
+  commitMoved(spec, head) {
+    const match = /#([0-9a-f]{7,40})$/.exec(String(spec ?? ''))
+    if (match === null) return false
+    return !head.startsWith(match[1]) && !match[1].startsWith(head)
   }
 
   /** Reachability of a tarball source. */
@@ -755,6 +833,15 @@ class Updater {
       entry.status = 'update'
       entry.actions.push('update')
       return entry
+    }
+    // A private repository without release tags still moves: compare commits.
+    if (probe.kind === 'git' && probe.status === 'unknown' && probe.head !== undefined && isVersion(record.version)) {
+      const moved = probe.hasUpdate === true
+      if (moved) {
+        entry.status = 'update'
+        entry.actions.push('update')
+        return entry
+      }
     }
     if (probe.kind === 'local' && probe.stale === true) {
       entry.status = 'stale'
@@ -1014,13 +1101,17 @@ class Updater {
             outcomes.push({ id: item.id, action: 'incompatible', ...(await this.makeCompatible(record, item.accept === true)) })
             continue
           }
-          const target = item.version ?? entry.probe?.compatibleLatest ?? (record.kind === 'git' ? record.probe?.head : undefined)
+          if (record.kind === 'git') {
+            const head = item.version === undefined ? record.probe?.head : item.version
+            const outcome = await this.reinstall(record, `${normaliseGitUrl(record.url ?? record.spec)}#${head ?? 'HEAD'}`)
+            outcomes.push({ id: item.id, action: 'update', to: record.probe?.latest ?? head, ...outcome })
+            continue
+          }
+          const target = item.version ?? entry.probe?.compatibleLatest
           const outcome =
-            record.kind === 'git'
-              ? await this.reinstall(record, `${normaliseGitUrl(record.url ?? record.spec)}#${target ?? 'HEAD'}`)
-              : target === undefined
-                ? { ok: false, message: 'no target version is known for this plugin; run a check first' }
-                : await this.reinstall(record, `${record.name}@${target}`)
+            target === undefined
+              ? { ok: false, message: 'no target version is known for this plugin; run a check first' }
+              : await this.reinstall(record, `${record.name}@${target}`)
           outcomes.push({ id: item.id, action: 'update', to: target, ...outcome })
         } catch (error) {
           outcomes.push({ id: item.id, ok: false, message: String(error?.message ?? error) })
