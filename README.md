@@ -6,7 +6,7 @@ next version with a single update, and finds them all in one market index.
 
 | Package | What it does |
 | --- | --- |
-| [`dsh-eval-kernel`](packages/dsh-eval-kernel) | Persistent Python, R and JavaScript interpreters whose state survives across tool calls, with harness tools callable from inside a cell. |
+| [`dsh-eval-kernel`](packages/dsh-eval-kernel) | Persistent Python, R and JavaScript interpreters whose state survives across tool calls, running under the session's own file-effect policy. |
 | [`dsh-plugin-updater`](packages/dsh-plugin-updater) | Finds and applies updates for every plugin of the current profile: npm releases, git-hosted plugins including private repositories, and plugins whose declared dsh range lags behind the running dsh. |
 | [`dsh-web-search-model`](packages/dsh-web-search-model) | Adds the provider `model` field the stock web-search settings card leaves as a composition value. |
 | [`dsh-vibe-orchestrator`](packages/dsh-vibe-orchestrator) | Vibe mode: the conversation becomes a read-only orchestrator that routes work to fast, good and expert subagents. |

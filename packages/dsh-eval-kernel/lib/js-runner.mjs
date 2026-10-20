@@ -11,35 +11,12 @@
 import { createInterface } from 'node:readline'
 
 const FRAME_OUT = process.stdout
-const pendingReplies = new Map()
 
 function emit(frame) {
   FRAME_OUT.write(JSON.stringify(frame) + '\n')
 }
 
 const state = Object.create(null)
-
-/** Host tool call available inside a cell, e.g. `await tools.read({file_path})`. */
-function bridgeCall(name, args) {
-  const id = `tool-${Math.random().toString(36).slice(2)}`
-  return new Promise((resolve, reject) => {
-    pendingReplies.set(id, { resolve, reject })
-    emit({ type: 'tool', id, name, args: args ?? {} })
-  })
-}
-
-function installBridge(names) {
-  const tools = {}
-  for (const name of names) {
-    if (!name) continue
-    tools[name] = (args) => bridgeCall(name, args)
-  }
-  state.tools = tools
-  // Also expose each tool as a bare global for cells that prefer `read(...)`.
-  for (const [name, fn] of Object.entries(tools)) {
-    if (!(name in globalThis)) globalThis[name] = fn
-  }
-}
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 
@@ -69,7 +46,6 @@ async function runCell(code) {
 
 async function main() {
   emit({ type: 'ready', pid: process.pid, language: 'js' })
-  installBridge((process.env.DSH_EVAL_BRIDGE_TOOLS ?? '').split(','))
 
   let cellCount = 0
   const rl = createInterface({ input: process.stdin, crlfDelay: Infinity })
@@ -84,15 +60,6 @@ async function main() {
     }
 
     if (frame.type === 'exit') break
-    if (frame.type === 'tool') continue
-    if (frame.type === 'reply') {
-      const waiter = pendingReplies.get(frame.id)
-      if (!waiter) continue
-      pendingReplies.delete(frame.id)
-      if (frame.error) waiter.reject(new Error(String(frame.error)))
-      else waiter.resolve(frame.value ?? null)
-      continue
-    }
 
     const id = frame.id
     const chunks = []

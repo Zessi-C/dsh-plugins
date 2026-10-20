@@ -7,18 +7,22 @@
 //
 // Host -> child frames:
 //   {"id": "<str>", "code": "<str>"}       execute one cell
-//   {"id": "<str>", "type": "tool", "op": "call", "name": "...", "args": {...}}
-//                                          invoke one host tool from inside a cell
 //   {"type": "exit"}                       graceful shutdown
 //
 // Child -> host frames:
 //   {"type": "ready", "pid": n, "language": "r"|"py"}
 //   {"type": "stdout", "id": ..., "data": "..."}
 //   {"type": "stderr", "id": ..., "data": "..."}
-//   {"type": "reply",  "id": ..., "value": <json>}     answer to a tool frame
 //   {"type": "done",   "id": ..., "status": "ok"|"error", "count": n}
 //   {"type": "error",  "id": ..., "ename": "...", "evalue": "..."}
 //   {"type": "fatal",  "message": "..."}               interpreter died
+//
+// Confinement: when the caller supplies a `sandbox` descriptor, the interpreter
+// is not spawned directly but through the `landlock-run` launcher, which admits
+// only the granted filesystem roots. The child then owns exactly the file-effect
+// policy dsh applies to its own tools instead of inheriting the host process's
+// unrestricted access. A cell can no longer step around a policy by using
+// `open()` or `subprocess`: the kernel enforces it on the process itself.
 
 import { spawn, execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -29,12 +33,18 @@ import { join } from 'node:path'
 const MAX_PENDING_OUTPUT = 4 * 1024 * 1024
 
 export class KernelSession {
-  constructor({ language, command, args = [], cwd, env, inputMode = 'stdin' }) {
+  constructor({ language, command, args = [], cwd, env, inputMode = 'stdin', sandbox = null, scratchDir = null }) {
     this.language = language
     this.command = command
     this.args = args
     this.cwd = cwd
     this.env = env
+    // { launcher, grants } for a confined start, or null for a direct spawn.
+    // `grants` is the launcher argv up to (not including) the `--` separator.
+    this.sandbox = sandbox
+    // A private directory this interpreter owns (R's boot-time temp dir); it is
+    // removed with the process so a restart does not leave debris behind.
+    this.scratchDir = scratchDir
 
     this.child = null
     this.buffer = ''
@@ -45,8 +55,6 @@ export class KernelSession {
     this.starting = null
     // When set, stdout/stderr frames are collected here instead of dropped.
     this.collector = null
-    // Tool bridge callbacks owned by the host; installed by the plugin.
-    this.toolHandler = null
     this.queue = Promise.resolve()
     // 'stdin': frames go to the child's stdin pipe (Python reads sys.stdin).
     // 'fifo':  the child reads a named pipe instead. Rscript on Linux cannot
@@ -83,7 +91,13 @@ export class KernelSession {
         stdinSpec = 'ignore'
         spawnArgs = this.args.map((arg) => arg.split('{fifo}').join(this.fifoPath))
       }
-      const child = spawn(this.command, spawnArgs, {
+      // A confined start goes through the launcher, which applies the grant
+      // ruleset and then execs the interpreter: the frames on stdin/stdout are
+      // the interpreter's own, so nothing above this line changes.
+      const launch = this.sandbox
+        ? { command: this.sandbox.launcher, args: [...this.sandbox.grants, '--', this.command, ...spawnArgs] }
+        : { command: this.command, args: spawnArgs }
+      const child = spawn(launch.command, launch.args, {
         cwd: this.cwd,
         env: this.env,
         stdio: [stdinSpec, 'pipe', 'pipe'],
@@ -120,7 +134,14 @@ export class KernelSession {
         if (readyTimer) clearTimeout(readyTimer)
         fn(value)
       }
-      const fail = (error) => settle(reject, error, 'dead')
+      const fail = (error) => {
+        // A start that fails after the pipe was opened would otherwise leave
+        // that stream and its directory alive: an open fd keeps the host's
+        // event loop from ever draining, which turns one failed spawn into a
+        // process that never exits.
+        this.#disposeChannels()
+        settle(reject, error, 'dead')
+      }
       const ok = () => settle(resolve, this, 'ready')
 
       // Readiness is a frame (`{"type":"ready"}`), not a timeline cue: the
@@ -136,7 +157,12 @@ export class KernelSession {
         // Reject everything still outstanding; a dead interpreter cannot answer.
         for (const [, entry] of this.pending) entry.reject(new Error(`interpreter exited (code ${code}, signal ${sig})`))
         this.pending.clear()
-        if (!settled) fail(new Error(`interpreter exited before it was ready (code ${code}, signal ${sig})`))
+        // The launcher's own failures (usage error, unenforcing kernel, grant
+        // root it cannot open, failed exec) all exit 125 and say so on stderr.
+        // Reporting that instead of a bare exit code is what keeps a policy
+        // mistake from reading as "the interpreter crashed".
+        const launcherNote = this.sandbox && code === 125 ? ' — the sandbox launcher refused to start the interpreter' : ''
+        if (!settled) fail(new Error(`interpreter exited before it was ready (code ${code}, signal ${sig})${launcherNote}`))
       })
 
       child.stdout.setEncoding('utf8')
@@ -149,7 +175,14 @@ export class KernelSession {
         if (this.collector) this.collector.stderr += chunk
       })
 
-      const onAbort = () => fail(new Error('interpreter start aborted'))
+      const onAbort = () => {
+        // Aborting a start must not abandon a live child: failing the promise
+        // alone would leave an interpreter running that nothing can address.
+        try {
+          child.kill('SIGKILL')
+        } catch {}
+        fail(new Error('interpreter start aborted'))
+      }
       if (signal) {
         if (signal.aborted) {
           fail(new Error('interpreter start aborted'))
@@ -187,6 +220,27 @@ export class KernelSession {
     }
   }
 
+  /**
+   * Append streamed output to the current cell, keeping the host's memory
+   * bounded. A cell can print without limit, and the collector is the one place
+   * that would otherwise hold every byte until the cell ends. Past the budget
+   * the middle is dropped and counted: a runaway `print` in a loop then costs a
+   * fixed 4 MiB per stream instead of the host's memory. Head and tail are kept
+   * because that is what a reader can still use.
+   */
+  #append(kind, data) {
+    const collector = this.collector
+    if (!collector) return
+    const next = collector[kind] + data
+    if (next.length <= MAX_PENDING_OUTPUT) {
+      collector[kind] = next
+      return
+    }
+    const half = MAX_PENDING_OUTPUT >> 1
+    collector[kind] = next.slice(0, half) + next.slice(-half)
+    collector.dropped[kind] += next.length - MAX_PENDING_OUTPUT
+  }
+
   #handleFrame(frame) {
     switch (frame.type) {
       case 'ready':
@@ -195,20 +249,11 @@ export class KernelSession {
         this.onReadyFrame = null
         return
       case 'stdout':
-        if (this.collector) this.collector.stdout += frame.data ?? ''
+        this.#append('stdout', frame.data ?? '')
         return
       case 'stderr':
-        if (this.collector) this.collector.stderr += frame.data ?? ''
+        this.#append('stderr', frame.data ?? '')
         return
-      case 'tool': {
-        // The cell is blocked waiting for a host tool answer.
-        const id = frame.id
-        Promise.resolve()
-          .then(() => this.toolHandler?.(frame))
-          .then((value) => this.write({ type: 'reply', id, value: value === undefined ? null : value }))
-          .catch((error) => this.write({ type: 'reply', id, error: String(error?.message ?? error) }))
-        return
-      }
       case 'done':
       case 'error': {
         const entry = this.pending.get(frame.id)
@@ -266,7 +311,7 @@ export class KernelSession {
       if (signal?.aborted) throw new Error('cell aborted before it started')
 
       const id = randomUUID()
-      this.collector = { stdout: '', stderr: '' }
+      this.collector = { stdout: '', stderr: '', dropped: { stdout: 0, stderr: 0 } }
       const collector = this.collector
 
       const result = new Promise((resolve, reject) => {
@@ -301,8 +346,8 @@ export class KernelSession {
         if (!this.write({ id, code })) throw new Error('interpreter is not accepting input')
         await result
         return {
-          stdout: clamp(collector.stdout),
-          stderr: clamp(collector.stderr),
+          stdout: clamp(withDropNote(collector.stdout, collector.dropped.stdout)),
+          stderr: clamp(withDropNote(collector.stderr, collector.dropped.stderr)),
           executionCount: this.executionCount,
         }
       } finally {
@@ -321,8 +366,16 @@ export class KernelSession {
   async kill(reason = 'closed') {
     this.state = 'dead'
     this.killReason = reason
+    // Release what the dead process was still parked on. Without this a killed
+    // interpreter leaves its last partial line and cell output reachable from
+    // the map entry until the entry itself is dropped.
+    this.buffer = ''
+    this.collector = null
     const child = this.child
-    if (!child) return
+    if (!child) {
+      this.#disposeChannels()
+      return
+    }
     this.child = null
     // Deferred for the same reason as the error frame path: a synchronous
     // rejection here would become an unhandled rejection when the caller is not
@@ -346,18 +399,38 @@ export class KernelSession {
     }, 2000)
     await exited
     clearTimeout(timer)
-    if (this.fifoDir) {
+    this.#disposeChannels()
+  }
+
+  /**
+   * Release everything this interpreter owned outside the process itself: the
+   * frame pipe, its directory, and any private scratch directory. Idempotent,
+   * because a failed start and a later kill can both reach it.
+   */
+  #disposeChannels() {
+    try {
+      this.fifoStream?.end()
+    } catch {}
+    this.fifoStream = null
+    for (const dir of [this.fifoDir, this.scratchDir]) {
+      if (!dir) continue
       try {
-        rmSync(this.fifoDir, { recursive: true, force: true })
+        rmSync(dir, { recursive: true, force: true })
       } catch {}
-      this.fifoDir = null
-      this.fifoPath = null
     }
+    this.fifoDir = null
+    this.fifoPath = null
+    this.scratchDir = null
   }
 
   get alive() {
     return this.state === 'ready' || this.state === 'starting'
   }
+}
+
+function withDropNote(text, dropped) {
+  if (!dropped) return text
+  return `${text}\n... [${dropped} characters dropped while streaming] ...\n`
 }
 
 function clamp(text) {

@@ -1,5 +1,5 @@
 // eval-kernel: a persistent Python/R/JS interpreter whose state survives
-// across tool calls, with cells able to call back into the harness's own tools.
+// across tool calls, confined by the harness's own file-effect policy.
 //
 // This is a migration of omp's `eval` tool. What omp gets from one long-lived
 // interpreter per language, this plugin gets the same way: a child process per
@@ -10,6 +10,8 @@
 //
 // R is an addition over omp: its eval backend enum is `py` and `js` only.
 
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
@@ -35,6 +37,77 @@ const { defineTool } = await import(
   requireFromHarness.resolve('@deepseek-ai/dsh-tools').replace(/\/lib\/index\.js$/, '/lib/index.js'),
 )
 
+// Confinement support, resolved from the host exactly like the tool helper: a
+// link: install has no node_modules of its own. A host without these packages
+// still loads the plugin -- the missing confinement is reported by the cell that
+// needs it, not at install time, so the failure names what is actually wrong.
+const sandboxSupport = await (async () => {
+  try {
+    const landlock = await import(requireFromHarness.resolve('@deepseek-ai/node-addon-system/landlock-run'))
+    const { writableRoots } = await import(requireFromHarness.resolve('@deepseek-ai/dsh-sandbox'))
+    return { landlock, writableRoots }
+  } catch {
+    return null
+  }
+})()
+
+// Probing spawns a short-lived child, so the verdict is computed once per
+// process rather than once per interpreter: interpreters come and go, the
+// kernel's ability to enforce does not.
+let launcherVerdict
+
+/**
+ * The file-effect policy this call must run under, or null for no confinement.
+ *
+ * Returns null when the session's policy grants everything (`danger-full-access`)
+ * -- confining there would silently narrow access the harness itself allows.
+ * Throws instead of degrading when confinement was asked for but cannot be
+ * delivered: an interpreter that looks confined and is not is worse than one
+ * that refuses to start.
+ */
+function sandboxPolicy(ctx, config, agent) {
+  if (!config.sandbox) return null
+  if (!sandboxSupport) {
+    throw new Error(
+      'run_cell: the sandbox packages are not resolvable from this harness install; set sandbox: false to run cells unconfined',
+    )
+  }
+  const policyService = ctx.get('sandboxPolicy')
+  if (!policyService) {
+    throw new Error('run_cell: no sandbox policy provider is mounted; set sandbox: false to run cells unconfined')
+  }
+  const policy = policyService.resolve(agent === undefined ? {} : { session: agent.session })
+  if (!policy || policy.mode === 'danger-full-access') return null
+
+  if (launcherVerdict === undefined) launcherVerdict = sandboxSupport.landlock.probe()
+  if (launcherVerdict === 'unusable') {
+    throw new Error('run_cell: the landlock launcher cannot enforce confinement on this host')
+  }
+  return policy
+}
+
+/**
+ * A stable identity for the confinement an interpreter was started under. Only
+ * the policy is part of it: a per-session scratch directory (see
+ * {@link createSession}) must not look like a policy change.
+ */
+function sandboxSignature(policy) {
+  return policy === null ? 'unconfined' : `${policy.mode}|${policy.workspaceRoot ?? ''}`
+}
+
+/** Launcher argv for one policy, plus any private roots the interpreter needs. */
+function buildSandbox(policy, extraWritable = []) {
+  const { landlock, writableRoots } = sandboxSupport
+  // Mirror the provider's own mapping: reads everywhere, writes only where the
+  // policy allows them. `/dev/null` is granted write because a confined process
+  // that cannot open it fails in ways that have nothing to do with the policy.
+  const readWrite = policy.mode === 'workspace-write' ? writableRoots(policy) : []
+  return {
+    launcher: landlock.launcherPath(),
+    grants: landlock.grantArgs({ readOnly: ['/'], readWrite: ['/dev/null', ...readWrite, ...extraWritable] }),
+  }
+}
+
 export const Config = z.object({
   pythonBinary: z.string().default('python3').description('Interpreter used for the `py` language.'),
   rBinary: z.string().default('Rscript').description('Interpreter used for the `r` language.'),
@@ -42,10 +115,13 @@ export const Config = z.object({
   defaultLanguage: z.union([z.const('py'), z.const('r'), z.const('js')]).default('py').description('Language assumed when a call omits `language`.'),
   timeoutMs: z.number().default(300000).description('Per-cell budget in milliseconds; 0 disables the deadline.'),
   maxOutputChars: z.number().default(30000).description('Characters of cell output kept before truncating to head and tail.'),
-  bridgeTools: z
-    .array(z.string())
-    .default(['read', 'write', 'edit', 'bash', 'grep', 'glob'])
-    .description('Harness tools exposed to cells as plain functions of the same name.'),
+  sandbox: z
+    .boolean()
+    .default(true)
+    .description(
+      'Start each interpreter under the harness file-effect policy (landlock). ' +
+        'Disabling this runs cells with the host process\'s unrestricted filesystem access.',
+    ),
   idleTimeoutMs: z.number().default(1800000).description('Reclaim an idle interpreter after this long; 0 keeps it.'),
 })
 
@@ -88,56 +164,109 @@ function sessionKey(agentId, language) {
   return `${agentId ?? 'global'}::${language}`
 }
 
-function getSession(ctx, config, sessions, language, agentId) {
-  const key = sessionKey(agentId, language)
-  const existing = sessions.get(key)
-  // Reuse whatever is in the map, alive or still starting. A concurrent caller
-  // must join the same interpreter: replacing it mid-flight kills the process
-  // the first caller is already talking to, which surfaces as "interpreter is
-  // not running" for every call but the last.
-  if (existing) return existing
+/**
+ * Build the interpreter for one (agent, language, policy).
+ *
+ * R gets a private scratch directory in every mode. It is not a policy
+ * relaxation: Rscript creates a session temp directory while booting, so under
+ * `read-only` it dies with exit 2 before it can accept a cell. The directory is
+ * created here, granted on its own (never `/tmp` as a whole), exported as
+ * TMPDIR, and removed with the interpreter.
+ */
+function createSession(ctx, config, language, policy) {
   const spec = LANGUAGES[language]
-  const session = new KernelSession({
+  let scratchDir = null
+  let extraWritable = []
+  let env
+  if (policy && language === 'r') {
+    scratchDir = mkdtempSync(join(tmpdir(), 'eval-kernel-r-'))
+    extraWritable = [scratchDir]
+    env = { ...process.env, TMPDIR: scratchDir }
+  }
+  return new KernelSession({
     language,
     command: spec.command(config),
     args: spec.args(config),
     cwd: ctx.get('workingDirectory')?.defaultDirectory,
-    env: { ...process.env, DSH_EVAL_BRIDGE_TOOLS: config.bridgeTools.join(',') },
     inputMode: spec.inputMode,
+    env,
+    sandbox: policy ? buildSandbox(policy, extraWritable) : null,
+    scratchDir,
   })
-  // The child calls harness tools through this handler. It answers with the
-  // tool's text content, which is what a cell can meaningfully consume.
-  session.toolHandler = async (frame) => {
-    if (!frame?.name) throw new Error('bridge call is missing a tool name')
-    const tools = ctx.get('tools')
-    if (!tools) throw new Error('tool registry is not available')
-    const controller = new AbortController()
-    const result = await tools.execute({
-      name: frame.name,
-      arguments: frame.args ?? {},
-      callId: `eval-bridge-${Date.now()}`,
-      signal: controller.signal,
-      agent: agentId ? { id: agentId } : undefined,
-    })
-    const text = (result.content ?? [])
-      .filter((block) => block.type === 'text')
-      .map((block) => block.text)
-      .join('\n')
-    if (result.isError) throw new Error(text || `${frame.name} failed`)
-    return text
+}
+
+/**
+ * Acquire the interpreter for one call, restarting it when it can no longer be
+ * the right one.
+ *
+ * The file-effect policy is resolved per call, never cached on the interpreter.
+ * A conversation's permissions change while it runs -- the user widens or
+ * narrows the mode, an escalation is approved -- and an interpreter holding the
+ * old ruleset would keep answering under revoked limits, because landlock is
+ * irrevocable once exec'd. Only a new process can express a new policy, so a
+ * changed signature restarts it and the caller is told its state is gone.
+ *
+ * A dead interpreter (crashed, aborted, timed out) is likewise replaced rather
+ * than thrown at: a wedged process would otherwise poison every later cell.
+ */
+async function acquireSession(ctx, config, sessions, language, agent, policy, reclaimed) {
+  const key = sessionKey(agent?.id, language)
+  const signature = sandboxSignature(policy)
+  let session = sessions.get(key)
+  let restartReason = null
+
+  if (session && session.state === 'dead') {
+    sessions.delete(key)
+    session = undefined
+    restartReason = 'dead'
   }
-  sessions.set(key, session)
-  return session
+  if (session && session.policySignature !== signature) {
+    await session.kill('policy changed').catch(() => {})
+    sessions.delete(key)
+    session = undefined
+    restartReason = 'policy'
+  }
+  if (!session) {
+    // The idle sweeper drops the entry it kills, so the map alone cannot say
+    // that an interpreter used to be here. The tombstone can, and without it
+    // the model would silently lose its variables to a timer it never saw.
+    if (reclaimed.delete(key)) restartReason = 'idle'
+    session = createSession(ctx, config, language, policy)
+    session.policySignature = signature
+    sessions.set(key, session)
+  }
+  return { session, restartReason }
+}
+
+/**
+ * What the model is told when an interpreter had to be replaced. Silently
+ * losing a DataFrame is the kind of surprise that turns into a wrong answer, so
+ * the loss is reported in the cell's own stderr.
+ */
+function restartNote(reason) {
+  if (reason === 'policy') {
+    return 'note: the sandbox policy changed, so the interpreter was restarted; earlier variables are gone.\n'
+  }
+  if (reason === 'dead') {
+    return 'note: the previous interpreter was no longer running, so a fresh one was started; earlier variables are gone.\n'
+  }
+  if (reason === 'idle') {
+    return `note: the interpreter was reclaimed after being idle, so a fresh one was started; earlier variables are gone.\n`
+  }
+  return ''
 }
 
 export function apply(ctx, config) {
   const sessions = new Map()
+  // Keys whose interpreter was killed while nobody was looking, so the next
+  // call can say so instead of handing back a silently empty namespace.
+  const reclaimed = new Set()
 
   // Build the tool definition BEFORE registering any effect. Constructing it is
   // pure, so a malformed definition throws here with nothing half-registered;
   // registering a side effect first and failing afterwards is what left an
   // unowned timer behind on the first install attempt.
-  const tool = createEvalTool(ctx, config, sessions)
+  const tool = createEvalTool(ctx, config, sessions, reclaimed)
 
   // The tool is the plugin's whole purpose: register it first so a failure
   // below cannot leave the profile with effects but no working capability.
@@ -164,6 +293,7 @@ export function apply(ctx, config) {
         const now = Date.now()
         for (const [key, session] of sessions) {
           if (session.lastUsedAt && now - session.lastUsedAt > config.idleTimeoutMs) {
+            reclaimed.add(key)
             session.kill('idle').catch(() => {})
             sessions.delete(key)
           }
@@ -175,7 +305,7 @@ export function apply(ctx, config) {
   }
 }
 
-function createEvalTool(ctx, config, sessions) {
+function createEvalTool(ctx, config, sessions, reclaimed) {
   const descriptions = Object.entries(LANGUAGES)
     .map(([token, spec]) => `\`${token}\` (${spec.label})`)
     .join(', ')
@@ -187,7 +317,8 @@ function createEvalTool(ctx, config, sessions) {
       'Interpreter state — variables, imports, loaded data — survives between calls, so a large object ' +
       'never has to be written to disk and read back. Use this instead of `bash` for exploratory ' +
       'computation; use `bash` for shell work. ' +
-      `Cells may call these harness tools as plain functions: ${config.bridgeTools.join(', ')}. ` +
+      'The interpreter runs under the session file-effect policy, so a cell cannot write outside the ' +
+      'workspace (use `bash` when you need a shell). ' +
       'A failing cell returns its traceback and leaves the interpreter alive. ' +
       'Pass `reset: true` to discard the interpreter and start clean.',
     // The parameter root is an implicit object; each property is a
@@ -209,8 +340,11 @@ function createEvalTool(ctx, config, sessions) {
       const spec = LANGUAGES[language]
       if (!spec) throw new Error(`unsupported language: ${language}`)
 
-      const agentId = exec.agent?.id
-      const key = sessionKey(agentId, language)
+      const key = sessionKey(exec.agent?.id, language)
+
+      // Resolved before anything is killed or reused: a policy that cannot be
+      // read is a failed call, not a licence to run the old process.
+      const policy = sandboxPolicy(ctx, config, exec.agent)
 
       if (args.reset) {
         const existing = sessions.get(key)
@@ -218,7 +352,7 @@ function createEvalTool(ctx, config, sessions) {
         sessions.delete(key)
       }
 
-      const session = getSession(ctx, config, sessions, language, agentId)
+      const { session, restartReason } = await acquireSession(ctx, config, sessions, language, exec.agent, policy, reclaimed)
       session.lastUsedAt = Date.now()
       const timeoutMs = resolveTimeout(args.timeoutMs, config.timeoutMs)
 
@@ -240,7 +374,7 @@ function createEvalTool(ctx, config, sessions) {
         // turn every title-less call into TOOL_OUTPUT_INVALID.
         title: args.title ?? '',
         stdout: truncate(outcome.stdout, config.maxOutputChars),
-        stderr: truncate(outcome.stderr, config.maxOutputChars),
+        stderr: truncate(restartNote(restartReason) + outcome.stderr, config.maxOutputChars),
         executionCount: outcome.executionCount,
         durationMs: Date.now() - started,
       }

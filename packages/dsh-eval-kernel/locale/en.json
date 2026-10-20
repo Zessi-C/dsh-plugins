@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Persistent Interpreters",
-    "description": "Run Python, R and JavaScript cells in long-lived interpreters whose state survives across tool calls, with harness tools callable from inside a cell."
+    "description": "Run Python, R and JavaScript cells in long-lived interpreters whose state survives across tool calls, confined by the session's own file-effect policy."
   }
 }

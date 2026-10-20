@@ -1,8 +1,8 @@
 {
   "name": "dsh-eval-kernel",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Persistent Python, R and JavaScript interpreters for dsh, with cells that can call the harness's own tools.",
+  "description": "Persistent Python, R and JavaScript interpreters for dsh, confined by the session's own file-effect policy.",
   "type": "module",
   "license": "MIT",
   "author": "Zessi-C",
@@ -19,7 +19,9 @@
     "r",
     "repl",
     "notebook",
-    "interpreter"
+    "interpreter",
+    "sandbox",
+    "landlock"
   ],
   "main": "lib/index.js",
   "exports": {

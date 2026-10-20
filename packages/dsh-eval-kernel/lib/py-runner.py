@@ -33,11 +33,6 @@ def emit(frame):
     _FRAME_OUT.flush()
 
 
-def plain(value):
-    """Coerce a host-tool answer into something json.dumps can carry."""
-    return value if value is None else value
-
-
 class _CellStdout:
     """Collects one cell's writes and forwards them as stdout frames."""
 
@@ -64,37 +59,6 @@ class _CellStderr(_CellStdout):
         if self.parts:
             emit({"type": "stderr", "id": self.cell_id, "data": "".join(self.parts)})
             self.parts = []
-
-
-def bridge_call(name, **args):
-    """Invoke one host tool from inside a cell and return its JSON value."""
-    request_id = "tool-%d" % id(args)
-    emit({"type": "tool", "id": request_id, "name": name, "args": args})
-    while True:
-        line = sys.__stdin__.readline()
-        if not line:
-            raise RuntimeError("host closed the bridge")
-        frame = json.loads(line)
-        if frame.get("type") == "exit":
-            raise SystemExit(0)
-        if frame.get("type") == "reply" and frame.get("id") == request_id:
-            if "error" in frame:
-                raise RuntimeError(str(frame["error"]))
-            return plain(frame.get("value"))
-
-
-def _install_bridge(names):
-    for name in names:
-        if name in builtins.__dict__:
-            continue
-        def _make(tool_name):
-            def _call(*args, **kwargs):
-                if args:
-                    raise TypeError("%s() takes keyword arguments only" % tool_name)
-                return bridge_call(tool_name, **kwargs)
-            _call.__name__ = tool_name
-            return _call
-        builtins.__dict__[name] = _make(name)
 
 
 class _NestedConsole(code.InteractiveConsole):
@@ -132,9 +96,6 @@ def main():
 
         if frame.get("type") == "exit":
             break
-        if frame.get("type") == "tool":
-            # A tool reply that arrives outside a bridge call has no waiter.
-            continue
 
         cell_id = frame.get("id")
         source = frame.get("code", "")
@@ -173,5 +134,4 @@ def main():
 
 
 if __name__ == "__main__":
-    _install_bridge(os.environ.get("DSH_EVAL_BRIDGE_TOOLS", "").split(","))
     main()

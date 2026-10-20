@@ -8,9 +8,8 @@
 # and echoes, which makes "is this cell finished" undecidable from the host. A
 # loop that owns its own prompt gives an unambiguous ready/finished boundary.
 #
-# Only jsonlite is required for tool replies; the rest is base R. When jsonlite
-# is absent the kernel still runs cells, and `bridge()` (host tool calls) degrades
-# to a clear error instead of a silent misparse.
+# jsonlite is used when present and the rest is base R. When jsonlite is absent
+# the kernel still runs cells; only the frame encoding falls back to simple_json.
 
 # Frames need their own handle on fd 1. Two traps this avoids:
 #   * `file("stdout")` opens a *disk file* named stdout, not the stream.
@@ -50,8 +49,7 @@ emit_frame <- function(frame) {
   flush(FRAME_CON)
 }
 
-# Base R has no JSON writer, so a minimal encoder covers the case where the host
-# answers a bridged tool call before any package could be loaded.
+# Base R has no JSON writer, so a minimal encoder covers hosts without jsonlite.
 simple_json <- function(x) {
   if (is.null(x) || length(x) == 0L) return("null")
   if (is.list(x)) {
@@ -81,45 +79,12 @@ simple_json <- function(x) {
   simple_json(as.character(x))
 }
 
-# --- host tool bridge -------------------------------------------------------
-
-bridge_call <- function(name, args = list()) {
-  if (!requireNamespace("jsonlite", quietly = TRUE)) {
-    stop("jsonlite is required for host tool calls; install.packages('jsonlite')")
-  }
-  request_id <- paste0("tool-", sample.int(.Machine$integer.max, 1L))
-  emit_frame(list(type = "tool", id = request_id, name = name, args = args))
-
-  repeat {
-    line <- readLines(STDIN_CON, n = 1L, warn = FALSE)
-    if (length(line) == 0L) stop("host closed the bridge")
-    frame <- tryCatch(jsonlite::fromJSON(line, simplifyVector = FALSE), error = function(e) NULL)
-    if (is.null(frame)) next
-    if (identical(frame$type, "exit")) quit(save = "no", status = 0)
-    if (!identical(frame$type, "reply") || !identical(frame$id, request_id)) next
-    if (!is.null(frame$error)) stop(frame$error)
-    return(frame$value)
-  }
-}
-
-install_bridge <- function(names) {
-  for (tool_name in names) {
-    if (nzchar(tool_name) && !exists(tool_name, inherits = FALSE)) {
-      local({
-        target <- tool_name
-        assign(target, function(...) bridge_call(target, list(...)), envir = globalenv())
-      })
-    }
-  }
-}
-
 # --- cell loop --------------------------------------------------------------
 
 # Tell the host the interpreter is loaded and can accept a cell. Nothing runs
 # before this frame, which is what makes "process spawned" distinguishable from
 # "REPL ready" over a pipe.
 emit_frame(list(type = "ready", pid = Sys.getpid(), language = "r"))
-install_bridge(strsplit(Sys.getenv("DSH_EVAL_BRIDGE_TOOLS", ""), ",", fixed = TRUE)[[1]])
 
 # Feed one line to R's parser and report whether it is a complete expression.
 # R's own REPL decides continuation by catching an "unexpected end of input"
@@ -149,11 +114,14 @@ repeat {
   )
   if (is.null(parsed) || !is.list(parsed)) next
   if (identical(parsed$type, "exit")) break
-  if (identical(parsed$type, "tool")) next
 
   cell_id <- parsed$id
-  out_file <- tempfile()
-  sink_handle <- file(out_file, open = "w")
+  # Capture the cell's printed output in memory. A temp file would be simpler,
+  # but a read-only sandbox has no writable temp directory, and the kernel has
+  # to keep working there: the interpreter must not depend on a write grant for
+  # the privilege of returning output.
+  captured_lines <- character()
+  sink_handle <- textConnection("captured_lines", open = "w", local = TRUE)
   sink(sink_handle, split = FALSE)
   status <- "ok"
   error_frame <- NULL
@@ -176,8 +144,7 @@ repeat {
   sink()
   close(sink_handle)
 
-  captured <- tryCatch(paste(readLines(out_file, warn = FALSE), collapse = "\n"), error = function(e) "")
-  unlink(out_file)
+  captured <- tryCatch(paste(captured_lines, collapse = "\n"), error = function(e) "")
 
   # Any bare cat() a cell made went to the frame channel; keep it out of stdout
   # by redirecting only when the cell itself asked for output. The collector

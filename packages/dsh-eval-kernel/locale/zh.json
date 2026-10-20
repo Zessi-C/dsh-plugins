@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "持久解释器",
-    "description": "在长驻的 Python、R、JavaScript 解释器中执行代码单元，状态跨工具调用保留，并且可以在单元内直接调用宿主工具。"
+    "description": "在长驻的 Python、R、JavaScript 解释器中执行代码单元，状态跨工具调用保留，并运行在会话自身的文件影响策略之下。"
   }
 }
