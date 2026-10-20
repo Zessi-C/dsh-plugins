@@ -7,6 +7,9 @@ window.__ModuleLoader__.load({
     /** Dictionary namespace; must match the Host row's locale resources. */
     const NS = 'plugin-updater'
 
+    /** Credential reference the Host reads for private repositories. */
+    const TOKEN_REF = 'DSH_PLUGIN_UPDATER_TOKEN'
+
     /**
      * Report ids the Host agent tool uses, mirrored here so a plan chosen on the
      * page reads exactly like one the agent would build.
@@ -51,6 +54,21 @@ window.__ModuleLoader__.load({
       noCompatible: '无兼容版本',
       blockedLatestHead: '最新版不声明支持当前 dsh：',
       upToDate: '已是最新',
+      satisfied: '满足',
+      sectionUnknown: '无法核对',
+      unknown: '未知',
+      unverified: '私有仓库或离线，浏览器端无法读取版本',
+      tokenTitle: '私有仓库凭据',
+      tokenHint: '读取私有仓库需要的 token，保存在 dsh 凭据存储里（~/.dsh/.credentials.yaml），只发给 github.com、gitlab.com、bitbucket.org。',
+      tokenPlaceholder: '粘贴 GitHub token（repo 权限即可）',
+      tokenSave: '保存',
+      tokenClear: '清除',
+      tokenConfigured: '已配置',
+      tokenMissing: '未配置',
+      tokenSaved: '已保存',
+      tokenCleared: '已清除',
+      tokenFailed: '操作失败',
+      tokenOpen: '凭据',
       local: '本地目录',
       localLinked: '本地目录（link/file），不联网探测',
       localStale: '源码比构建产物新，需要重新构建',
@@ -114,6 +132,21 @@ window.__ModuleLoader__.load({
       noCompatible: 'none compatible',
       blockedLatestHead: 'newest release does not declare this dsh:',
       upToDate: 'Up to date',
+      satisfied: 'met',
+      sectionUnknown: 'Unverified',
+      unknown: 'unknown',
+      unverified: 'private or offline; the browser cannot read the version',
+      tokenTitle: 'Private repository credential',
+      tokenHint: 'Token for private repositories. It is stored in the dsh credential store (~/.dsh/.credentials.yaml) and sent only to github.com, gitlab.com and bitbucket.org.',
+      tokenPlaceholder: 'Paste a GitHub token with repo scope',
+      tokenSave: 'Save',
+      tokenClear: 'Clear',
+      tokenConfigured: 'configured',
+      tokenMissing: 'not configured',
+      tokenSaved: 'Saved',
+      tokenCleared: 'Cleared',
+      tokenFailed: 'Failed',
+      tokenOpen: 'Credential',
       local: 'Local',
       localLinked: 'Local directory (link/file); not probed over the network',
       localStale: 'Sources are newer than the build output; rebuild the package',
@@ -191,6 +224,12 @@ window.__ModuleLoader__.load({
 .pu-empty{padding:18px;text-align:center;color:var(--dsw-alias-label-secondary);font-size:12.5px}
 .pu-error{color:var(--dsw-alias-state-error-primary);font-size:12px}
 @media (max-width:820px){.pu-row{grid-template-columns:24px 1fr auto;row-gap:6px}.pu-head-row{display:none}.pu-col-hide{display:none}}
+.pu-token{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-1);padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+.pu-token-head{display:flex;align-items:baseline;gap:10px;font-size:12.5px}
+.pu-token-hint{margin:0;font-size:11.5px;line-height:1.6;color:var(--dsw-alias-label-secondary)}
+.pu-token-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.pu-token-input{flex:1 1 260px;min-width:200px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.pu-ok{color:var(--dsw-alias-state-success-primary);font-size:11.5px}
 `
 
     //#endregion
@@ -317,20 +356,49 @@ window.__ModuleLoader__.load({
     }
 
     /** Classify the dependency spec recorded in the profile manifest. */
+    /**
+     * Split a git fragment into the ref and the package subdirectory, mirroring
+     * the Host's parser. pnpm writes both into one fragment joined by `&`, so
+     * reading it as a bare ref loses the package directory.
+     */
+    function parseFragment(fragment) {
+      if (typeof fragment !== 'string' || fragment === '') return {}
+      let ref
+      let subdirectory
+      for (const part of fragment.split('&')) {
+        const trimmed = part.trim()
+        if (trimmed === '') continue
+        const match = /^path[:=](.*)$/i.exec(trimmed)
+        if (match !== null) {
+          const value = match[1].replace(/^\/+|\/+$/g, '')
+          if (value !== '') subdirectory = value
+          continue
+        }
+        if (ref === undefined) ref = trimmed
+      }
+      return { ...(ref === undefined || ref === '' ? {} : { ref }), ...(subdirectory === undefined ? {} : { subdirectory }) }
+    }
+
+    const fragmentOf = (text) => (text.includes('#') ? text.slice(text.indexOf('#') + 1) : undefined)
+
     function classifySpec(spec) {
       const text = String(spec ?? '').trim()
       if (text === '') return { kind: 'npm' }
       if (/^(file:|link:|portal:|workspace:)/i.test(text)) return { kind: 'local' }
       if (/^(github|gitlab|bitbucket):/i.test(text)) {
-        const [scheme, rest] = text.split(':', 2)
-        const [path, ref] = String(rest ?? '').split('#', 2)
-        return { kind: 'git', host: scheme, url: `https://${scheme}.com/${path}`, ref }
+        const colon = text.indexOf(':')
+        const scheme = text.slice(0, colon)
+        const rest = text.slice(colon + 1)
+        const hash = rest.indexOf('#')
+        const path = hash === -1 ? rest : rest.slice(0, hash)
+        return { kind: 'git', host: scheme, url: `https://${scheme}.com/${path}`, ...parseFragment(hash === -1 ? undefined : rest.slice(hash + 1)) }
       }
-      if (/^(git\+|git@|git:\/\/)/i.test(text) || /\.git(?:#|$)/.test(text)) return { kind: 'git', url: text }
-      if (/^https?:\/\//i.test(text)) return { kind: /\.tgz(?:#.*)?$/i.test(text) ? 'tarball' : 'git', url: text }
+      if (/^(git\+|git@|git:\/\/)/i.test(text) || /\.git(?:#|$)/.test(text)) return { kind: 'git', url: text, ...parseFragment(fragmentOf(text)) }
+      if (/^https?:\/\//i.test(text)) return { kind: /\.tgz(?:#.*)?$/i.test(text) ? 'tarball' : 'git', url: text, ...parseFragment(fragmentOf(text)) }
       if (/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+(?:#.*)?$/.test(text)) {
-        const [path, ref] = text.split('#', 2)
-        return { kind: 'git', host: 'github', url: `https://github.com/${path}`, ref }
+        const hash = text.indexOf('#')
+        const path = hash === -1 ? text : text.slice(0, hash)
+        return { kind: 'git', host: 'github', url: `https://github.com/${path}`, ...parseFragment(hash === -1 ? undefined : text.slice(hash + 1)) }
       }
       return { kind: 'npm' }
     }
@@ -386,6 +454,43 @@ window.__ModuleLoader__.load({
         }
       }
       return undefined
+    }
+
+    /**
+     * Read a git plugin's manifest from a public raw endpoint.
+     *
+     * The browser cannot run git and holds no repository credential, so a
+     * private repository is simply unreadable here; the caller then reports the
+     * plugin as unverified instead of guessing that it has an update.
+     *
+     * @param {object} parsed - Result of classifySpec.
+     * @param {string} runtime - Running dsh version.
+     * @returns {Promise<{ version: string, dshOk: boolean } | undefined>} Manifest facts, or undefined.
+     */
+    async function gitRawManifest(parsed, runtime) {
+      const url = normaliseGitUrl(parsed.url)
+      const match = /^https:\/\/([^/]+)\/([^/]+)\/([^/]+?)(?:\.git)?$/.exec(url)
+      if (match === null) return undefined
+      const [, host, owner, repo] = match
+      const base =
+        host === 'github.com'
+          ? `https://raw.githubusercontent.com/${owner}/${repo}`
+          : host === 'gitlab.com'
+            ? `https://gitlab.com/${owner}/${repo}/-/raw`
+            : host === 'bitbucket.org'
+              ? `https://bitbucket.org/${owner}/${repo}/raw`
+              : undefined
+      if (base === undefined) return undefined
+      const ref = typeof parsed.ref === 'string' && parsed.ref !== '' ? parsed.ref : 'main'
+      const sub = typeof parsed.subdirectory === 'string' && parsed.subdirectory !== '' ? `${parsed.subdirectory}/` : ''
+      try {
+        const manifest = await fetchJson(`${base}/${ref}/${sub}package.json`, { timeoutMs: 12000 })
+        if (manifest === null || typeof manifest.version !== 'string') return undefined
+        const facts = dshRequirements(manifest, runtime)
+        return { version: manifest.version, dshOk: Object.keys(facts.unmet).length === 0 }
+      } catch {
+        return undefined
+      }
     }
 
     /** True when both versions name the same commit prefix. */
@@ -476,10 +581,29 @@ window.__ModuleLoader__.load({
             }
             return
           }
-          // A git plugin: only the recorded commit is available without the Host,
-          // so the page reports the remote's identity rather than inventing one.
-          entry.probe = { status: 'ok', url: normaliseGitUrl(parsed.url), pinned: pinnedCommit(entry.spec) }
-          entry.hasUpdate = false
+          // A git plugin: read its manifest where the host allows it, and otherwise
+          // say the version is unverified rather than claim an update.
+          const remote = await gitRawManifest(parsed, runtime)
+          if (remote !== undefined) {
+            const newer = compareVersions(remote.version, entry.version) > 0
+            entry.probe = {
+              status: 'ok',
+              url: normaliseGitUrl(parsed.url),
+              pinned: pinnedCommit(entry.spec),
+              latest: remote.version,
+              ...(newer ? { compatibleLatest: remote.version } : {}),
+            }
+            entry.hasUpdate = newer && remote.dshOk
+            entry.remoteDshOk = remote.dshOk
+          } else {
+            entry.probe = {
+              status: 'unknown',
+              url: normaliseGitUrl(parsed.url),
+              pinned: pinnedCommit(entry.spec),
+              note: 'unverified',
+            }
+            entry.hasUpdate = false
+          }
         }),
       )
       if (!isCurrent()) return undefined
@@ -493,12 +617,15 @@ window.__ModuleLoader__.load({
           entry.status = entry.probe.blockedLatest === undefined ? 'incompatible' : 'incompatible-update'
           continue
         }
-        if (entry.hasUpdate === true || (entry.kind === 'git' && entry.parsed?.pinned === undefined && entry.probe?.url !== undefined)) {
+        if (entry.hasUpdate === true) {
           entry.status = 'update'
           continue
         }
-        entry.status = entry.kind === 'local' ? 'local' : 'current'
-        if (entry.kind === 'git' && entry.parsed?.pinned !== undefined) entry.status = 'current'
+        if (entry.kind === 'local') {
+          entry.status = 'local'
+          continue
+        }
+        entry.status = entry.probe.status === 'unknown' ? 'unknown' : 'current'
       }
       return { runtime, registries, entries, scannedAt: new Date().toISOString() }
     }
@@ -536,6 +663,7 @@ window.__ModuleLoader__.load({
       const [query, setQuery] = React.useState('')
       const [pending, setPending] = React.useState(null)
       const [progress, setProgress] = React.useState(null)
+      const [token, setToken] = React.useState({ open: false, configured: false, draft: '', busy: false, notice: null })
       const scanId = React.useRef(0)
 
       const runScan = React.useCallback(async () => {
@@ -572,6 +700,7 @@ window.__ModuleLoader__.load({
         updates: filtered.filter((entry) => entry.status === 'update'),
         blocked: filtered.filter((entry) => entry.status === 'incompatible' || entry.status === 'incompatible-update'),
         local: filtered.filter((entry) => entry.status === 'local'),
+        unknown: filtered.filter((entry) => entry.status === 'unknown'),
         current: filtered.filter((entry) => entry.status === 'current'),
         builtin: filtered.filter((entry) => entry.status === 'builtin'),
         error: filtered.filter((entry) => entry.status === 'error'),
@@ -643,8 +772,10 @@ window.__ModuleLoader__.load({
       const latestText = (entry) => {
         if (entry.kind === 'builtin') return entry.version ?? '—'
         if (entry.status === 'local') return t('local')
-        if (entry.status === 'update' && entry.probe?.compatibleLatest !== undefined) return entry.probe.compatibleLatest
+        if (entry.status === 'unknown') return t('unknown')
+        if (entry.probe?.compatibleLatest !== undefined) return entry.probe.compatibleLatest
         if (entry.status === 'incompatible-update' && entry.probe?.blockedLatest !== undefined) return entry.probe.blockedLatest
+        if (entry.probe?.latest !== undefined) return entry.probe.latest
         return entry.version ?? '—'
       }
 
@@ -652,7 +783,7 @@ window.__ModuleLoader__.load({
       const requirementText = (entry) => {
         const unmet = entry.dsh?.requirements ?? {}
         const names = Object.keys(unmet)
-        if (names.length === 0) return t('upToDate')
+        if (names.length === 0) return t('satisfied')
         return `${names[0]} ${unmet[names[0]]}`
       }
 
@@ -704,6 +835,93 @@ window.__ModuleLoader__.load({
         )
       }
 
+      /** Read whether the token is already stored, without exposing its value. */
+      const readToken = React.useCallback(async () => {
+        try {
+          const answer = await ctx.remote.credentials.describe([TOKEN_REF])
+          const info = answer?.ok === true ? answer.value?.[TOKEN_REF] : undefined
+          setToken((current) => ({ ...current, configured: info?.configured === true }))
+        } catch {
+          setToken((current) => ({ ...current, configured: false }))
+        }
+      }, [ctx])
+
+      /** Save the pasted token into the dsh credential store. */
+      const saveToken = React.useCallback(async () => {
+        const value = token.draft.trim()
+        if (value === '') return
+        setToken((current) => ({ ...current, busy: true, notice: null }))
+        try {
+          const answer = await ctx.remote.credentials.set(TOKEN_REF, value)
+          const failed = answer?.ok === false
+          setToken((current) => ({
+            ...current,
+            busy: false,
+            draft: failed ? current.draft : '',
+            configured: failed ? current.configured : true,
+            notice: failed ? `${t('tokenFailed')}: ${answer?.error?.code ?? ''}` : t('tokenSaved'),
+          }))
+        } catch (error) {
+          setToken((current) => ({ ...current, busy: false, notice: `${t('tokenFailed')}: ${String(error?.message ?? error)}` }))
+        }
+      }, [ctx, t, token.draft])
+
+      /** Remove the stored token. */
+      const clearToken = React.useCallback(async () => {
+        setToken((current) => ({ ...current, busy: true, notice: null }))
+        try {
+          const answer = await ctx.remote.credentials.unset(TOKEN_REF)
+          const failed = answer?.ok === false
+          setToken((current) => ({
+            ...current,
+            busy: false,
+            configured: failed ? current.configured : false,
+            notice: failed ? `${t('tokenFailed')}: ${answer?.error?.code ?? ''}` : t('tokenCleared'),
+          }))
+        } catch (error) {
+          setToken((current) => ({ ...current, busy: false, notice: `${t('tokenFailed')}: ${String(error?.message ?? error)}` }))
+        }
+      }, [ctx, t])
+
+      const toggleToken = React.useCallback(() => {
+        setToken((current) => {
+          const open = !current.open
+          return { ...current, open, notice: null }
+        })
+        void readToken()
+      }, [readToken])
+
+      const tokenPanel =
+        token.open === false
+          ? null
+          : h(
+              'div',
+              { className: 'pu-token' },
+              h(
+                'div',
+                { className: 'pu-token-head' },
+                h('strong', null, t('tokenTitle')),
+                h('span', { className: token.configured ? 'pu-ok' : 'pu-dim' }, token.configured ? t('tokenConfigured') : t('tokenMissing')),
+              ),
+              h('p', { className: 'pu-token-hint' }, t('tokenHint')),
+              h(
+                'div',
+                { className: 'pu-token-row' },
+                h('input', {
+                  className: 'pu-search pu-token-input',
+                  type: 'password',
+                  autoComplete: 'off',
+                  placeholder: t('tokenPlaceholder'),
+                  value: token.draft,
+                  disabled: token.busy,
+                  onChange: (event) => setToken((current) => ({ ...current, draft: event.target.value })),
+                }),
+                h('button', { type: 'button', className: 'pu-btn pu-btn-primary', disabled: token.busy || token.draft.trim() === '', onClick: () => void saveToken() }, t('tokenSave')),
+                h('button', { type: 'button', className: 'pu-btn', disabled: token.busy || !token.configured, onClick: () => void clearToken() }, t('tokenClear')),
+              ),
+              token.notice === null ? null : h('div', { className: 'pu-note' }, token.notice),
+            )
+
       const header = h(
         'div',
         { className: 'pu-bar' },
@@ -714,6 +932,7 @@ window.__ModuleLoader__.load({
         ),
         h('input', { className: 'pu-search', type: 'search', placeholder: t('searchPlaceholder'), value: query, onChange: (event) => setQuery(event.target.value) }),
         h('button', { type: 'button', className: 'pu-btn', disabled: busy, onClick: () => void clearExemptions() }, t('clear')),
+        h('button', { type: 'button', className: 'pu-btn', 'aria-expanded': token.open, onClick: toggleToken }, t('tokenOpen')),
         h('span', { className: 'pu-spacer' }),
         report === null
           ? null
@@ -742,6 +961,7 @@ window.__ModuleLoader__.load({
           h(Section, { title: t('sectionUpdates'), entries: groups.updates, render: row }),
           h(Section, { title: t('sectionBlocked'), entries: groups.blocked, render: row }),
           h(Section, { title: t('sectionLocal'), entries: groups.local, render: row }),
+          h(Section, { title: t('sectionUnknown'), entries: groups.unknown, render: row }),
           h(Section, { title: t('sectionCurrent'), entries: groups.current, render: row }),
           h(Section, { title: t('sectionError'), entries: groups.error, render: row }),
           h(Section, { title: t('sectionBuiltin'), entries: groups.builtin, render: row }),
@@ -811,6 +1031,7 @@ window.__ModuleLoader__.load({
         'div',
         { className: 'pu-root' },
         header,
+        tokenPanel,
         body(),
         modal,
         progressPanel,
@@ -918,7 +1139,7 @@ window.__ModuleLoader__.load({
 
     //#endregion
 
-    const inject = ['slots', 'locale', 'remote', 'remote.pluginManager']
+    const inject = ['slots', 'locale', 'remote', 'remote.pluginManager', 'remote.credentials']
 
     function apply(ctx) {
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-plugin-updater: dictionaries')
