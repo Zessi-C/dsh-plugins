@@ -510,13 +510,16 @@ window.__ModuleLoader__.load({
               () => ctx.on('connection/reset', () => controller.loadCatalog()),
               'dsh-vibe-orchestrator: connection resets',
             )
-            return ctx.slots.inject('plugins.item', () =>
+            // `plugins.bundle.config` renders on this bundle's own page in the
+            // Plugins list, keyed by the package name. `plugins.item` belongs to
+            // the shipped plugin settings (subagent, web search, agent loop,
+            // shell), so a plugin's own page there reads as built in and shows
+            // the plugin twice.
+            return ctx.slots.inject('plugins.bundle.config', () =>
               ctx.slots.register(
                 {
-                  name: 'plugins.item',
-                  id: 'vibe-orchestrator',
-                  order: 60,
-                  label: () => t('title'),
+                  name: 'plugins.bundle.config',
+                  key: 'dsh-vibe-orchestrator',
                   locale: NS,
                   inject: () => controller.inject(),
                 },
