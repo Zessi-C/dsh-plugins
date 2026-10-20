@@ -1,0 +1,50 @@
+{
+  "name": "dsh-eval-kernel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Persistent Python, R and JavaScript interpreters for dsh, with cells that can call the harness's own tools.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Zessi-C",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Zessi-C/dsh-plugins.git"
+  },
+  "homepage": "https://github.com/Zessi-C/dsh-plugins/tree/main/packages/dsh-eval-kernel",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "python",
+    "r",
+    "repl",
+    "notebook",
+    "interpreter"
+  ],
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "lib/index.js",
+    "lib/kernel-session.js",
+    "lib/py-runner.py",
+    "lib/r-runner.R",
+    "lib/js-runner.mjs",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "LICENSE",
+    "locale/*.json",
+    "icon.svg"
+  ]
+}

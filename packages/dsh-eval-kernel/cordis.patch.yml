@@ -1,0 +1,18 @@
+# eval-kernel: persistent interpreters for Python, R and JavaScript.
+#
+# One row is enough: the plugin registers a single `run_cell` tool and picks the
+# interpreter per call from its `language` argument.
+- insert:
+    - id: eval-kernel
+      name: 'dsh-eval-kernel'
+      config:
+        defaultLanguage: py
+        timeoutMs: 300000
+        maxOutputChars: 30000
+        bridgeTools:
+          - read
+          - write
+          - edit
+          - bash
+          - grep
+          - glob
