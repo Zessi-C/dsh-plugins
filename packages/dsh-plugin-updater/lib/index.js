@@ -301,20 +301,64 @@ export function dshConstraintOf(manifest) {
 //#region specs
 
 /** Classify one recorded dependency spec. */
+/**
+ * Split a git spec fragment into the ref and the package subdirectory.
+ *
+ * pnpm puts both in one fragment, joined by `&`:
+ *
+ *   #main&path:/packages/name
+ *   #<commit>&path:/packages/name
+ *   #path:/packages/name&main
+ *   #semver:^1.0.0&path:/packages/name
+ *
+ * Reading the fragment as a bare ref makes a package in a monorepo look like the
+ * repository root, so the two parts are separated here once and reused.
+ *
+ * @param {string | undefined} fragment - Text after `#`, without the `#`.
+ * @returns {{ ref?: string, subdirectory?: string }} Parsed parts.
+ */
+export function parseFragment(fragment) {
+  if (typeof fragment !== 'string' || fragment === '') return {}
+  let ref
+  let subdirectory
+  for (const part of fragment.split('&')) {
+    const trimmed = part.trim()
+    if (trimmed === '') continue
+    const pathMatch = /^path[:=](.*)$/i.exec(trimmed)
+    if (pathMatch !== null) {
+      const value = pathMatch[1].replace(/^\/+|\/+$/g, '')
+      if (value !== '') subdirectory = value
+      continue
+    }
+    if (ref === undefined) ref = trimmed
+  }
+  return { ...(ref === undefined || ref === '' ? {} : { ref }), ...(subdirectory === undefined ? {} : { subdirectory }) }
+}
+
 export function classifySpec(spec) {
   const text = String(spec ?? '').trim()
   if (text === '') return { kind: 'npm' }
   if (/^(file:|link:|portal:|workspace:)/i.test(text)) return { kind: 'local' }
   if (/^(github|gitlab|bitbucket):/i.test(text)) {
-    const [scheme, rest] = text.split(':', 2)
-    const [path, ref] = String(rest ?? '').split('#', 2)
-    return { kind: 'git', host: scheme, url: `https://${scheme}.com/${path}`, ref, remotePath: path }
+    const colon = text.indexOf(':')
+    const scheme = text.slice(0, colon)
+    const rest = text.slice(colon + 1)
+    const hash = rest.indexOf('#')
+    const path = hash === -1 ? rest : rest.slice(0, hash)
+    const fragment = hash === -1 ? undefined : rest.slice(hash + 1)
+    return { kind: 'git', host: scheme, url: `https://${scheme}.com/${path}`, remotePath: path, ...parseFragment(fragment) }
   }
-  if (/^(git\+|git@|git:\/\/)/i.test(text) || /\.git(?:#|$)/.test(text)) return { kind: 'git', url: text }
-  if (/^https?:\/\//i.test(text)) return { kind: /\.tgz(?:#.*)?$/i.test(text) ? 'tarball' : 'git', url: text }
+  if (/^(git\+|git@|git:\/\/)/i.test(text) || /\.git(?:#|$)/.test(text)) {
+    return { kind: 'git', url: text, ...parseFragment(text.includes('#') ? text.slice(text.indexOf('#') + 1) : undefined) }
+  }
+  if (/^https?:\/\//i.test(text)) {
+    return { kind: /\.tgz(?:#.*)?$/i.test(text) ? 'tarball' : 'git', url: text, ...parseFragment(text.includes('#') ? text.slice(text.indexOf('#') + 1) : undefined) }
+  }
   if (/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+(?:#.*)?$/.test(text)) {
-    const [path, ref] = text.split('#', 2)
-    return { kind: 'git', host: 'github', url: `https://github.com/${path}`, ref, remotePath: path }
+    const hash = text.indexOf('#')
+    const path = hash === -1 ? text : text.slice(0, hash)
+    const fragment = hash === -1 ? undefined : text.slice(hash + 1)
+    return { kind: 'git', host: 'github', url: `https://github.com/${path}`, remotePath: path, ...parseFragment(fragment) }
   }
   return { kind: 'npm' }
 }
@@ -708,7 +752,7 @@ class Updater {
     const head = listed.output.split('\n').find((line) => line.trim() !== '')?.split(/\s+/)[0]
     if (head === undefined) return { kind: 'git', status: 'error', url, note: 'the remote reported no HEAD' }
     const parsed = classifySpec(record.spec)
-    const subdirectory = typeof parsed.ref === 'string' && parsed.ref.startsWith('path:') ? parsed.ref.slice(5) : undefined
+    const subdirectory = parsed.subdirectory
     const base = this.rawBase(url)
     if (base !== undefined) {
       for (const ref of [head, 'HEAD']) {
