@@ -91,12 +91,56 @@
       "versions": [
         {
           "version": "0.13.2",
-          "publishTimestamp": 1792465918,
+          "publishTimestamp": 1792475955,
           "source": {
             "type": "git",
             "url": "https://github.com/Zessi-C/dsh-plugins.git",
-            "commit": "d5bb4efea13379dd33f75e65668b274e1c52f7fe",
+            "commit": "3da7ab5923222ca8f7d38351c97f7dcce4a5ab31",
             "path": "packages/dsh-lan-gate"
+          },
+          "engines": {
+            "dsh": "*"
+          }
+        }
+      ]
+    },
+    {
+      "name": "dsh-model-thinking-levels",
+      "title": {
+        "en": "Model Thinking Levels",
+        "zh": "模型思考档位"
+      },
+      "description": {
+        "en": "Edit per-model thinking levels and model order inside the Models settings card, which the stock page leaves to the composition.",
+        "zh": "在模型设置卡里编辑每个模型的思考档位与顺序；官方页面把这些留给配置层。"
+      },
+      "author": "Zessi-C",
+      "homepage": "https://github.com/Zessi-C/dsh-plugins/tree/main/packages/dsh-model-thinking-levels",
+      "repository": {
+        "url": "https://github.com/Zessi-C/dsh-plugins.git",
+        "directory": "packages/dsh-model-thinking-levels"
+      },
+      "metadata": {
+        "keywords": [
+          "dsh",
+          "dsh-plugin",
+          "deepseek-harness",
+          "settings",
+          "models",
+          "reasoning-effort"
+        ],
+        "labels": [],
+        "sortKeys": {}
+      },
+      "versions": [
+        {
+          "version": "1.2.0",
+          "publishTimestamp": 1792478328,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/Zessi-C/dsh-plugins.git",
+            "commit": "9b7e1240b841e5a1126631419dd2fad78c2eac04",
+            "path": "packages/dsh-model-thinking-levels"
           },
           "engines": {
             "dsh": "*"
@@ -133,12 +177,12 @@
       },
       "versions": [
         {
-          "version": "0.2.1",
-          "publishTimestamp": 1792475254,
+          "version": "0.3.0",
+          "publishTimestamp": 1792477492,
           "source": {
             "type": "git",
             "url": "https://github.com/Zessi-C/dsh-plugins.git",
-            "commit": "6a5ef0c7bd37df9fe05d9f37b4268b9a5ebe7a49",
+            "commit": "9b7e1240b841e5a1126631419dd2fad78c2eac04",
             "path": "packages/dsh-plugin-updater"
           },
           "engines": {

@@ -11,6 +11,7 @@ next version with a single update, and finds them all in one market index.
 | [`dsh-web-search-model`](packages/dsh-web-search-model) | Adds the provider `model` field the stock web-search settings card leaves as a composition value. |
 | [`dsh-vibe-orchestrator`](packages/dsh-vibe-orchestrator) | Vibe mode: the conversation becomes a read-only orchestrator that routes work to fast, good and expert subagents. |
 | [`dsh-lan-gate`](packages/dsh-lan-gate) | Browser shim for the multi-user portal: rewrites loopback detection and restores the crypto APIs plain HTTP lacks, plus the `dsh-web-ctl` operations CLI and its deployment files. |
+| [`dsh-model-thinking-levels`](packages/dsh-model-thinking-levels) | Per-model thinking levels and model order inside the Models settings card, which the stock page leaves to the composition. |
 
 ## Install on a new machine
 
@@ -29,6 +30,10 @@ dsh plugin --profile web add \
   'git+https://github.com/Zessi-C/dsh-plugins.git#main&path:/packages/dsh-vibe-orchestrator'
 dsh plugin --profile web add \
   'git+https://github.com/Zessi-C/dsh-plugins.git#main&path:/packages/dsh-lan-gate'
+dsh plugin --profile web add \
+  'git+https://github.com/Zessi-C/dsh-plugins.git#main&path:/packages/dsh-eval-kernel'
+dsh plugin --profile web add \
+  'git+https://github.com/Zessi-C/dsh-plugins.git#main&path:/packages/dsh-model-thinking-levels'
 ```
 
 Then add each package name to `dsh.profile.bundles` in the profile's `package.json`
