@@ -68,6 +68,18 @@ official card still registers as usual (at `priority: 0`; a different priority i
 not a conflict) but does not render. The slot documentation names this use case
 explicitly: *"register at a different priority to shadow it (lowest renders)"*.
 
+### One card, not two
+
+Taking the card over is only half of it. This package is also a bundle, so the
+Plugins list shows it and asks the bundle's own page for its configuration through
+`plugins.bundle.config`, keyed by the package name. Rendering the form there as
+well put the same settings on screen twice: once inside the built-in group and
+once under the bundle.
+
+The bundle registration therefore answers with `null`. The settings live on the
+shipped card's cell and nowhere else, which leaves exactly one web search card in
+the interface while the bundle stays listed and updatable.
+
 ### Cost
 
 Taking over the card means the **whole card belongs to this package**. The four
@@ -77,9 +89,11 @@ or changed upstream will **not** be inherited automatically; after upgrading dsh
 compare against
 `@deepseek-ai/dsh-client-ui-settings-web-search/lib/client.js`.
 
-To avoid this cost, return to two separate cards instead: change the registered
-`id` in `lib/client.js` to `"web-search-model"`, drop `priority: -1`, and set
-`order` to 41.
+To avoid this cost, return to two separate cards instead: change the `plugins.item`
+registration in `lib/client.js` to `id: "web-search-model"`, drop `priority: -1`,
+and set `order` to 41. The `plugins.bundle.config` registration then has to render
+the form rather than `null`, or the new card would be the only place the settings
+appear.
 
 ## Maintenance
 
@@ -107,6 +121,12 @@ does not match your install:
 ```sh
 DSH_DS_PACKAGES=/path/to/@deepseek-ai python3 check-drift.py
 ```
+
+A package the script cannot find is reported as `missing file` and no check runs
+for it. Current dsh releases ship `dsh-client-ui-slots` and `dsh-client-ui-primitives`
+only inside the built `dsh-web-frontend` bundle, with no `lib/` on disk, so those
+two checks report `missing file` there and the rest still pass. Treat that message
+as "not checked in this install", not as drift.
 
 **Not covered:** a change to the *behaviour* of an official field whose id stayed
 the same (for example, how `apiKeyEnv` is resolved). The script cannot see that;

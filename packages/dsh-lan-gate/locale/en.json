@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "LAN Gate",
+    "description": "Browser shim for the multi-user portal: rewrites loopback detection and restores the crypto APIs plain HTTP lacks, so the settings pages work behind dsh-portal."
+  }
+}

@@ -1,0 +1,8 @@
+# dsh-portal 的 PAM 服务配置。
+# 与 /etc/pam.d/rstudio 同形（这台机器上 RStudio Server 已在用同一套），
+# 直接复用发行版提供的 common-* 栈，避免自己拼一套容易出错的规则。
+auth       required     pam_env.so
+auth       include      common-auth
+account    include      common-account
+session    required     pam_env.so
+session    include      common-session

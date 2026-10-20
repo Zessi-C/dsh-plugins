@@ -1,0 +1,21 @@
+# Your patch layer for this dsh profile, applied after every bundle layer.
+
+# lan-gate：把 dsh web 直接绑到 Tailscale IP，并按 tailnet 身份鉴权。
+# listenHost 是本机 tailnet 地址；allowedLogins / allowedNodes 为白名单（逗号分隔）。
+- id: lan-gate
+  config:
+    listenHost: "<TAILNET_IP>"
+    allowedLogins: "<YOUR_TAILSCALE_LOGIN>"
+    allowedNodes: "<node-a>,<node-b>,<node-c>"
+
+# 延长浏览器 cookie 有效期（默认 30 天）。启动 token 每次重启都会变，
+# 但 cookie 签名密钥持久化在 $DSH_HOME/.credentials.yaml，所以登录一次即可长期免 token。
+# 注意：必须保留 trustedHosts 这行表达式，否则会丢掉 dsh-web.service 里 --trusted-host 的注入。
+- id: connection
+  config:
+    trustedHosts: !!js ctx.webRuntime.trustedHosts
+    cookieMaxAgeDays: 3650
+- id: ui-settings-general
+  name: "@deepseek-ai/dsh-client-ui-settings-general"
+  config:
+    welcomeNoticeVersion: 2026-08-13.1

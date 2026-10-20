@@ -1,0 +1,22 @@
+{
+  "bind": "<TAILNET_IP>",
+  "port": 3080,
+  "public_authorities": [
+    "<TAILNET_IP>:3080",
+    "<TAILNET_IP>"
+  ],
+  "public_authority": null,
+  "pam_service": "dsh-portal",
+  "backend_port_base": 42000,
+  "instance_unit": "dsh@{user}.service",
+  "secret_file": "/etc/dsh-portal/secret",
+  "session_days": 30,
+  "idle_minutes": 60,
+  "allow_users": [],
+  "min_uid": 1000,
+  "max_uid": 60000,
+  "max_failed_logins": 5,
+  "failed_login_window": 600,
+  "lockout_seconds": 600,
+  "log_file": "/var/log/dsh-portal/access.log"
+}

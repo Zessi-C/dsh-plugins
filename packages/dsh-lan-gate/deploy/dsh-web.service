@@ -1,0 +1,21 @@
+[Unit]
+Description=DeepSeek Harness (dsh) Web UI on Tailscale
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+Environment=NODE_ENV=production
+# 用 Node ≥26：它内置的 undici 是 8.x，与 dsh 依赖的 npm undici（8.x）同大版本。
+# Node 24 及以前内置 undici 7.x，与 dsh 装的全局 dispatcher 跨大版本不兼容，
+# 内置 fetch 会**不跟随重定向**，HuggingFace 的模型下载只拿到 302/307/308。
+Environment=PATH=%h/.nvm/versions/node/v26.10.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=%h/.nvm/versions/node/v26.10.0/bin/node %h/.nvm/versions/node/v26.10.0/bin/dsh --profile web --no-open --trusted-host <TAILNET_IP> --trusted-host <TAILNET_IP>:3080
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:%h/.dsh/logs/dsh-web.out.log
+StandardError=append:%h/.dsh/logs/dsh-web.err.log
+
+[Install]
+WantedBy=default.target

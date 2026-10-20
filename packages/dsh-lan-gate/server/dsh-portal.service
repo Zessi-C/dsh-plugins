@@ -1,0 +1,21 @@
+[Unit]
+Description=dsh-portal - PAM-authenticated multi-user front door for dsh
+Documentation=https://github.com/Zessi-C/dsh-lan-gate
+Wants=network.target
+After=network.target
+
+[Service]
+Type=simple
+User=root
+# 门户要读 shadow 走 PAM、并用 systemctl 起别人的用户单元 —— 必须 root。
+ExecStart=/usr/bin/python3 /opt/dsh-portal/portal.py --config /etc/dsh-portal/config.json
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+# 门户本身不写任何用户数据，只做认证与转发
+ProtectSystem=full
+ProtectHome=no
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

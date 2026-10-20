@@ -59,6 +59,15 @@ for (const entry of rec.entries) {          // 已按 priority 升序
 （`priority: 0`；priority 不同不算冲突），但不渲染。槽机制明确记载了这一用法：
 *「register at a different priority to shadow it (lowest renders)」*。
 
+### 只出现一张卡
+
+顶替只是其中一半。本包同时**是一个 bundle**，所以插件列表里会列出它，并按其包名向
+`plugins.bundle.config` 索取「本 bundle 自己的配置页」。如果在那个页面上也渲染表单，
+同一份设置就会在屏幕上出现两次：内置插件区一次，bundle 页面一次。
+
+因此本包对 bundle 配置槽的注册**返回 `null`**。设置只存在于官方卡那一格里，界面上
+因此只有一张网页搜索卡，而 bundle 仍然保持可见、可更新。
+
 ### 代价
 
 接管意味着**整张卡归本包所有**。四个字段是官方客户端组件的忠实移植
@@ -66,8 +75,10 @@ for (const entry of rec.entries) {          // 已按 priority 升序
 变更的字段**不会**被自动继承；升级 dsh 后请对照
 `@deepseek-ai/dsh-client-ui-settings-web-search/lib/client.js`。
 
-若不希望承担这一代价，可以改回两张卡：把 `lib/client.js` 中注册的 `id` 改为
-`"web-search-model"`、去掉 `priority: -1`、把 `order` 改为 41。
+若不希望承担这一代价，可以改回两张卡：把 `lib/client.js` 中 `plugins.item` 那条注册的
+`id` 改为 `"web-search-model"`、去掉 `priority: -1`、把 `order` 改为 41。此时
+`plugins.bundle.config` 那条注册必须改为渲染表单而不是 `null`，否则设置只剩下新卡
+这一处入口。
 
 ## 维护
 
@@ -94,6 +105,11 @@ python3 check-drift.py
 ```sh
 DSH_DS_PACKAGES=/path/to/@deepseek-ai python3 check-drift.py
 ```
+
+脚本找不到的包会报 `missing file`，对应那项检查不会执行。当前 dsh 版本把
+`dsh-client-ui-slots` 与 `dsh-client-ui-primitives` 只打进构建产物
+`dsh-web-frontend`，磁盘上没有独立的 `lib/`，所以这两项会报 `missing file`，其余检查
+照常通过。把这条消息理解为「本次安装未能检查」，而不是「发生了漂移」。
 
 **未覆盖的情况**：官方某个字段的**行为**变了（例如 `apiKeyEnv` 的解析规则），而
 字段 id 没变。脚本看不出来，只能人工 diff。

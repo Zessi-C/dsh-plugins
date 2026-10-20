@@ -1,0 +1,4 @@
+- id: webserver
+  config:
+    host: !!js '"<TAILNET_IP>"'
+    port: 3082

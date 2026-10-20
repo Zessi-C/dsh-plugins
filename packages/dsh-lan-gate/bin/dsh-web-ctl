@@ -1,0 +1,1909 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+dsh-web-ctl — dsh web 运维 CLI（dsh-lan-gate / dsh-portal 配套）
+
+v0.6.0 起面向**多用户门户**架构（单实例 dsh-web.service 已废弃）：
+
+    浏览器 ──► dsh-portal(3080, PAM 登录) ──► 127.0.0.1:(42000+uid) 每用户 dsh 实例
+
+服务端三个部件：
+  · dsh-portal.service   系统单元（root）：门户 + 反代 + 审计
+  · dsh@<user>.service   系统模板单元：每用户一个回环实例
+  · /opt/dsh/node        共享 Node 运行时（dsh 装在这里，全局一份）
+
+命令（服务器操作都需要 root —— 目标机上有免密 sudo 即可）：
+
+  dsh-web-ctl status           门户 / 监听 / tailnet / 实例表 / 最近事件
+  dsh-web-ctl users            有 ~/.dsh 的账号与其实例状态
+  dsh-web-ctl url              只打印访问地址
+  dsh-web-ctl login            打印访问地址（登录 = Linux 账号密码，无 token）
+  dsh-web-ctl token            （已废弃）PAM 门户没有启动 token，仅作提示
+  dsh-web-ctl start|stop|restart|enable|disable [USER]
+                               无 USER = 门户；带 USER = 那个用户的实例
+  dsh-web-ctl logs [-n N] [-f] [USER]
+                               门户或实例的 journal 日志
+  dsh-web-ctl gate [-n N]      门户审计日志尾部（登录/引导/拒绝事件）
+  dsh-web-ctl peers [--json]   按用户聚合的访问统计
+  dsh-web-ctl doctor           自检清单（配置/端口公式/共享运行时/seed/PAM…）
+  dsh-web-ctl verify           端到端（从本机当浏览器客户端实测门户）
+  dsh-web-ctl deploy [--dir DIR]
+                               上传 lan-gate 插件：共享 seed 目录 + 每用户遗留副本，
+                               并重启活动实例
+  dsh-web-ctl update [--tag T] [--check] [--force] [--online]
+                               更新共享运行时里的 dsh 并滚动重启活动实例
+  dsh-web-ctl install-unit [--print] [--diff]
+                               写 /etc/systemd/system/dsh@.service（实例模板单元）。
+                               单元的唯一真源就在本文件里；--print 只打印不落盘，
+                               --diff 只显示与目标机现有单元的差异
+  dsh-web-ctl install [--dir DIR] [--check]
+                               安装服务器端部署件（仓库 server/ → 目标机）：
+                               portal.py / dsh-portal.service / dsh-instance /
+                               pam.dsh-portal / config.example.json / npmrc，
+                               并顺带落盘实例模板单元。--check 只比对不落盘
+                               （发现"机器上被人手改过"的漂移，退出码 1）
+
+  --json                       机器可读输出（status / doctor / peers）
+
+目标主机解析（**本仓库不含任何个人化默认值**）：
+
+  1. `--host <host>`            2. `$DSH_WEB_HOST`
+  3. `~/.config/dsh-web-ctl/config` 里的 `host = ...`
+  三者都没有、而本机就是宿主（存在 /etc/dsh-portal）时，自动本地执行。
+"""
+
+import argparse
+import difflib
+import hashlib
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+import unicodedata
+from datetime import datetime, timezone
+
+# ─── 服务端布局（与 dsh-portal / dsh@.service 的约定保持一致） ───
+PORTAL_UNIT = "dsh-portal.service"
+PORTAL_CONFIG = "/etc/dsh-portal/config.json"
+PORTAL_LOG = "/var/log/dsh-portal/access.log"
+PORTAL_PAM = "/etc/pam.d/dsh-portal"
+INSTANCE_UNIT = "dsh@{user}.service"
+SHARED_NODE = "/opt/dsh/node"
+DSH_BIN = SHARED_NODE + "/bin/dsh"
+NPM_BIN = SHARED_NODE + "/bin/npm"
+WRAPPER = "/opt/dsh/bin/dsh-instance"
+SEED_DIR = "/opt/dsh/share/dsh-lan-gate"
+LEGACY_PLUGIN_DIR = ".dsh/plugins/dsh-lan-gate/lib"   # 相对每用户 $HOME
+LEGACY_PLUGIN_ROOT = ".dsh/plugins/dsh-lan-gate"      # package.json 的位置
+
+# ─── 实例模板单元：唯一真源 ───
+# 下面这段就是 /etc/systemd/system/dsh@.service 的**全部内容**，由
+# `dsh-web-ctl install-unit` 落到目标机。
+#
+# 为什么要把单元搬进仓库：这个文件原先是在机器上手写的、不在任何版本管理里，
+# 于是「MemoryMax=16G」这种致命配置没人看得见也没人评审 —— 2026-10-19 的
+# 「任务反复中断」事故就是这么来的（agent 在 bash 里起的 scANVI 训练顶爆 16G，
+# cgroup OOM，又因 OOMPolicy 默认 stop 把整个实例停掉）。
+# 现在它是代码，`doctor` 会核对这三项，改坏了会被当场指出来。
+INSTANCE_UNIT_PATH = "/etc/systemd/system/dsh@.service"
+
+INSTANCE_UNIT_TEMPLATE = r"""[Unit]
+Description=dsh web instance for %i (loopback only; fronted by dsh-portal)
+Documentation=https://github.com/Zessi-C/dsh-lan-gate
+After=network.target
+
+[Service]
+Type=simple
+User=%i
+# HOME/USER/LOGNAME/SHELL 由 systemd 按用户记录设置；dsh 以 $HOME/.dsh 为 DSH_HOME
+Environment=NODE_ENV=production
+Environment=PATH=/opt/dsh/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# 出站代理 = 用户级：dsh 自带的 @deepseek-ai/dsh-http-proxy 会为每个 profile
+# 解析策略，取值优先级是「进程环境变量 > $DSH_HOME/.env」。
+# 所以这里**不写死**代理地址 —— 写死会压掉用户自己的 ~/.dsh/.env。
+# 只保留一个开关：Node 的 fetch(undici) 默认不读 HTTP_PROXY，需要它才认。
+# （loopback 由 dsh-http-proxy 内部强制绕过，不需要在这里设 NO_PROXY。）
+# 用户要配代理：echo 'HTTPS_PROXY=http://<ip>:<port>' >> ~/.dsh/.env
+Environment=NODE_USE_ENV_PROXY=1
+# PATH 说明：这里只给系统目录，/opt/dsh/node/bin 由 wrapper 再前置；
+# 用户级工具目录（$HOME/.local/bin、node/current/bin）由 wrapper 按运行用户动态拼 ——
+# 不能用 %h：system 服务里 %h 展开为 /root（实测），不是实例用户的家目录。
+# 不要加 NoNewPrivileges=yes —— 内核会禁止 setuid 提权，dsh 里 sudo 直接失效。
+ExecStart=/opt/dsh/bin/dsh-instance
+Restart=on-failure
+RestartSec=2
+
+# ─────────────── 2026-10-19 事故修复，勿改回去 ───────────────
+# 前提事实：本实例的 cgroup **必然**承载 agent 在 bash 里起的子进程
+# （scANVI 训练、比对、建模……）。这不是"使用姿势不对"，是架构决定的 ——
+# 所以护栏不能靠"让 agent 记得把重任务挪出去"，只能靠这三个设置。
+#
+# 1) 故意**不设** MemoryMax / MemoryHigh。
+#    曾设 MemoryMax=16G，被训练任务顶爆 → cgroup OOM → 整个实例被停 →
+#    用户看到「DSH 进程在本轮完成前退出 / 本轮已中止」。
+#    要限制内存请按用户限（portal 侧），不要在这里设任何硬上限。
+# 2) OOMPolicy=continue（默认 stop）：
+#    任意子进程被 OOM 时不连坐停掉整个实例，dsh 本体继续活着。
+# 3) KillMode=process（默认 mixed）：
+#    任何一次停止/重启（portal 空闲回收、升级、崩溃重启）只终止主进程，
+#    训练任务继续跑。代价：可能残留孤儿进程，需人工或定时清理。
+KillMode=process
+TasksMax=8192
+OOMPolicy=continue
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+# ─── 服务器端部署件（仓库 server/ ↔ 目标机落点）───
+# 这些件原先全部手写在机器上、不在任何版本管理里（清单见
+# docs/deployment-inventory.md）。install 子命令按这张表把它们落盘。
+#
+# 为什么不和实例单元一样内嵌进本文件：它们要么是独立程序（portal.py 54 KB）、
+# 要么是需要单独评审的配置文件，留在 server/ 里在 GitHub 上能直接看；
+# 而内嵌的那 54 KB 只会让这个单文件 CLI 变成两份真源。
+# 代价：install 需要仓库副本在场（与 deploy 一样，用 find_bundle_dir 解析）。
+SERVER_BUNDLE = (
+    ("portal.py", "/opt/dsh-portal/portal.py", "0755",
+     "门户本体：PAM 登录 + 反代 + 审计 + 空闲回收"),
+    ("dsh-portal.service", "/etc/systemd/system/dsh-portal.service", "0644",
+     "门户系统单元（root）"),
+    ("dsh-instance", "/opt/dsh/bin/dsh-instance", "0755",
+     "实例包装脚本（端口公式 42000+uid 在这里）"),
+    ("pam.dsh-portal", "/etc/pam.d/dsh-portal", "0644",
+     "PAM 服务定义（门户登录用它）"),
+    ("config.example.json", "/etc/dsh-portal/config.example.json", "0644",
+     "门户配置示例（只在 config.json 不存在时被采用，绝不覆盖真实配置）"),
+    ("npmrc", "/opt/dsh/node/etc/npmrc", "0644",
+     "共享 npmrc（registry 镜像 / maxsockets）"),
+    ("logrotate.dsh-portal", "/etc/logrotate.d/dsh-portal", "0644",
+     "门户审计日志轮转（daily / 30 份 / create 0640 root adm）"),
+)
+
+# 与 package.json 的 version 保持一致（单文件零依赖的 CLI 不读 manifest；
+# doctor 会核对这一项）。改版本时两处都要动。
+VERSION = "0.13.1"
+
+SSH_OPTS = "-o ConnectTimeout=15 -o BatchMode=yes"
+
+CONFIG_HINT = (
+    "    请任选其一：\n"
+    "      · 命令行指定：  dsh-web-ctl --host <host> ...\n"
+    "      · 环境变量：    export DSH_WEB_HOST=<host>\n"
+    "      · 本机配置文件：~/.config/dsh-web-ctl/config\n"
+    "                        host = <host>"
+)
+
+
+def load_local_config():
+    """读本机配置（不入库）。只认 `key = value`，`#` 起注释。"""
+    path = os.environ.get("DSH_WEB_CTL_CONFIG") or \
+        os.path.expanduser("~/.config/dsh-web-ctl/config")
+    cfg = {}
+    if not path or not os.path.isfile(path):
+        return cfg
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.split("#", 1)[0].strip()
+                if not line or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                cfg[k.strip().lower()] = v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return cfg
+
+
+# ─────────────────────────── 颜色 / 输出 ───────────────────────────
+
+class C:
+    _on = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+    G = "\033[32m" if _on else ""
+    R = "\033[31m" if _on else ""
+    Y = "\033[33m" if _on else ""
+    D = "\033[2m" if _on else ""
+    B = "\033[1m" if _on else ""
+    X = "\033[0m" if _on else ""
+
+
+def die(msg, code=1):
+    print(f"{C.R}错误{C.X} {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def _disp_w(s):
+    """按终端显示宽度算字符串长度（CJK 算 2 列），否则中文列会错位。"""
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in s)
+
+
+def pad(s, n):
+    s = str(s)
+    return s + " " * max(0, n - _disp_w(s))
+
+
+def kv(label, value, width=10, dim_label=True):
+    lab = f"{C.D}{pad(label, width)}{C.X}" if dim_label else pad(label, width)
+    print(f"{lab}  {value}")
+
+
+# ─────────────────────────── 执行层（本地 / 远程） ───────────────────────────
+
+class Target:
+    def __init__(self, host=None, force_local=False, force_remote=False):
+        self.host = host
+        self.local = False
+        if force_local:
+            self.local = True
+        elif force_remote:
+            self.local = False
+        elif host:
+            self.local = False
+        else:
+            # 没给主机：本机就是宿主（有 /etc/dsh-portal）→ 本地执行（省一次 ssh）
+            self.local = os.path.isdir("/etc/dsh-portal")
+        if not self.local and not self.host:
+            die("未指定目标主机。\n" + CONFIG_HINT)
+
+    def shell(self, script, timeout=60, capture=True):
+        """在目标主机上跑一段 shell 脚本。
+
+        远端一律 `sh -c '...'`：ssh 会用登录 shell（可能是 zsh/fish）执行命令，
+        而 zsh 默认不做分词（`$S` 这种「sudo -n」多词变量会变成一个带空格的
+        命令名）。强制交给 sh 解释，与远端登录 shell 无关。
+        """
+        if self.local:
+            return _raw(script, timeout=timeout, capture=capture)
+        inner = "sh -c " + shlex.quote(script)
+        cmd = f"ssh {SSH_OPTS} {shlex.quote(self.host)} {shlex.quote(inner)}"
+        return _raw(cmd, timeout=timeout, capture=capture)
+
+    def out(self, script, timeout=60):
+        rc, so, se = self.shell(script, timeout=timeout)
+        return so if rc == 0 else (so or "")
+
+    def label(self):
+        return "本机" if self.local else self.host
+
+
+def _raw(cmd, timeout=60, capture=True):
+    try:
+        if capture:
+            p = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+            return p.returncode, p.stdout, p.stderr
+        p = subprocess.run(cmd, shell=True, timeout=timeout)
+        return p.returncode, "", ""
+    except subprocess.TimeoutExpired:
+        return 124, "", "timeout"
+    except FileNotFoundError as e:
+        return 127, "", str(e)
+
+
+def ssh_ok(t):
+    """确认远程可达（本地模式恒为真）。"""
+    if t.local:
+        return True
+    rc, _, se = _raw(f"ssh {SSH_OPTS} -o ConnectTimeout=10 {shlex.quote(t.host)} true")
+    if rc != 0:
+        die(f"连不上 {t.host}：{se.strip() or 'ssh 失败'}")
+    return True
+
+
+# 所有服务器端脚本的公共前缀：分页器闭嘴 + 探测免密 sudo。
+# 系统单元 / /etc、/opt 下的文件都要 root；目标机 ssh 账号有免密 sudo 即可。
+PREAMBLE = r"""
+export SYSTEMD_PAGER=cat PAGER=cat GIT_PAGER=cat
+S=""
+if [ "$(id -u)" = 0 ]; then S=""; elif sudo -n true 2>/dev/null; then S="sudo -n"; fi
+ROOT_OK=1
+[ -n "$S" ] || [ "$(id -u)" = 0 ] || ROOT_OK=0
+"""
+
+
+def need_root(t):
+    """写操作前置检查：目标机要么是 root，要么有免密 sudo。"""
+    _, so, _ = t.shell(PREAMBLE + 'echo "ROOT_OK=$ROOT_OK"', timeout=30)
+    if "ROOT_OK=1" not in so:
+        die("目标机需要 root 权限（当前账号无免密 sudo）。"
+            "请给该账号配 NOPASSWD，或直接用 root 登录。")
+
+
+# ─────────────────────────── 状态采集 ───────────────────────────
+
+STATE_SCRIPT = PREAMBLE + r"""
+# —— 配置（root 才读得到；读不到就留空，调用方降级）——
+$S cat __CONFIG__ 2>/dev/null | python3 -c '
+import json, sys
+try:
+    c = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for k in ("bind", "port", "backend_port_base", "session_days", "idle_minutes",
+          "pam_service", "shim_dir", "secret_file"):
+    d = c.get(k)
+    print("CFG_%s=%s" % (k.upper(), "" if d is None else d))
+au = c.get("allow_users") or []
+print("CFG_ALLOW_USERS=" + ",".join(au))
+# 按用户的空闲上限（0 = 永不回收）。它是 dict，不能挤进上面的一维循环；
+# 不读出来 status 就看不见 —— 而那正是「为什么这个用户不被回收」的唯一答案。
+ibu = c.get("idle_minutes_by_user") or {}
+print("CFG_IDLE_BY_USER=" + ",".join("%s=%s" % (k, v) for k, v in sorted(ibu.items())))
+' || true
+
+# —— 门户单元 ——
+printf 'PORTAL_ACTIVE=%s\n'  "$(systemctl --no-pager is-active __PORTAL__ 2>/dev/null)"
+printf 'PORTAL_ENABLED=%s\n' "$(systemctl --no-pager is-enabled __PORTAL__ 2>/dev/null)"
+pp=$(systemctl --no-pager show -p MainPID --value __PORTAL__ 2>/dev/null)
+printf 'PORTAL_PID=%s\n' "$pp"
+if [ -n "$pp" ] && [ "$pp" != "0" ]; then
+  printf 'PORTAL_ETIME=%s\n' "$(ps -o etime= -p $pp 2>/dev/null | tr -d ' ')"
+  printf 'PORTAL_RSS=%s\n'   "$(ps -o rss= -p $pp 2>/dev/null | tr -d ' ')"
+fi
+
+# —— tailnet ——
+printf 'TAILIP=%s\n'   "$(tailscale ip -4 2>/dev/null | head -1)"
+printf 'TAILNAME=%s\n' "$(tailscale status --json 2>/dev/null | grep -m1 HostName | sed 's/.*: *"//;s/".*//')"
+printf 'TS_UP=%s\n'    "$(tailscale status --json 2>/dev/null | grep -m1 BackendState | sed 's/.*: *"//;s/".*//')"
+
+# —— 监听（默认 3080；配置读到 bind 就精确匹配）——
+PORT=${CFG_PORT:-3080}
+printf 'LISTEN=%s\n' "$(ss -ltn 2>/dev/null | awk -v p=":$PORT" '$4 ~ p"$" {print $4; exit}')"
+
+# —— 实例单元 ——
+us=$(systemctl list-units --all --no-legend 'dsh@*' 2>/dev/null | awk '{print $1}' | sed 's/^dsh@//;s/\.service$//')
+echo "INSTANCE_LIST=$us"
+BASE=${CFG_BACKEND_PORT_BASE:-42000}
+for x in $us; do
+  printf 'I_%s_ACTIVE=%s\n' "$x" "$(systemctl --no-pager is-active dsh@$x.service 2>/dev/null)"
+  p=$(systemctl --no-pager show -p MainPID --value dsh@$x.service 2>/dev/null)
+  printf 'I_%s_PID=%s\n' "$x" "$p"
+  if [ -n "$p" ] && [ "$p" != "0" ]; then
+    printf 'I_%s_ETIME=%s\n' "$x" "$(ps -o etime= -p $p 2>/dev/null | tr -d ' ')"
+    printf 'I_%s_RSS=%s\n'   "$x" "$(ps -o rss= -p $p 2>/dev/null | tr -d ' ')"
+  fi
+  uid=$(id -u "$x" 2>/dev/null)
+  printf 'I_%s_PORT=%s\n' "$x" "$([ -n "$uid" ] && echo $((BASE + uid)))"
+  if [ -n "$uid" ]; then
+    printf 'I_%s_LISTEN=%s\n' "$x" "$(ss -ltn 2>/dev/null | awk -v p=$((BASE + uid)) '$4 ~ ":"p"$" {print $4}')"
+  fi
+done
+
+# —— 关键文件 ——
+printf 'WRAPPER_OK=%s\n' "$([ -x __WRAPPER__ ] && echo yes || echo no)"
+printf 'WRAPPER_BASE=%s\n' "$(grep -oE '\(\(([0-9]+) \+' __WRAPPER__ 2>/dev/null | head -1 | grep -oE '[0-9]+')"
+printf 'NODE_OK=%s\n'     "$([ -x __DSH__ ] && echo yes || echo no)"
+printf 'DSH_VERSION=%s\n' "$(__DSH__ --version 2>/dev/null | head -1 | tr -d '\r\n')"
+printf 'SEED_INDEX=%s\n'  "$(stat -c %s __SEED__/lib/index.js 2>/dev/null || echo missing)"
+printf 'SEED_CLIENT=%s\n' "$(stat -c %s __SEED__/lib/client.js 2>/dev/null || echo missing)"
+printf 'SEED_PATCH=%s\n'  "$(stat -c %s __SEED__/cordis.patch.yml 2>/dev/null || echo missing)"
+printf 'SEED_VER=%s\n'    "$(python3 -c "import json;print(json.load(open('__SEED__/package.json'))['version'])" 2>/dev/null)"
+printf 'NPMRC_OK=%s\n'    "$([ -f __NODE__/etc/npmrc ] && echo yes || echo no)"
+printf 'NPMRC_MAXSOCKETS=%s\n' "$(grep -c maxsockets __NODE__/etc/npmrc 2>/dev/null)"
+# 审计日志：权限必须收在 0640（含各用户登录名与 tailnet 对端 IP，0644 在多用户机上
+# 等于把"谁在什么时候从哪个 IP 登录、失败了几次"发给全机）；且必须有轮转配置，
+# 否则它会无限长（实测 ≈12.8 KB/天，无上限）。
+printf 'AUDIT_MODE=%s\n'   "$(stat -c%a __AUDIT__ 2>/dev/null || echo missing)"
+printf 'AUDIT_ROTATE=%s\n' "$([ -f /etc/logrotate.d/dsh-portal ] && echo yes || echo no)"
+# 可读性必须按**普通用户**判定，不能用 root 的存在性检查冒充。
+# 本机实测过：/opt/dsh/node/etc/npmrc 的 ACL 授权对象写成 uid 998（该 uid 不存在），
+# 普通用户读不到本文件 → npm 静默回落 registry.npmjs.org，共享的镜像配置形同不存在；
+# 而 root（以及 root 组内的账号）看一切正常，所以只查存在性的项永远是绿的。
+NPMRC_READABLE=DENIED
+if [ "$(id -u)" = 0 ]; then
+  setpriv --reuid=nobody --regid=nogroup --clear-groups \
+    cat __NODE__/etc/npmrc >/dev/null 2>&1 && NPMRC_READABLE=READABLE
+elif sudo -n -u nobody cat __NODE__/etc/npmrc >/dev/null 2>&1; then
+  NPMRC_READABLE=READABLE
+fi
+printf 'NPMRC_READABLE=%s\n' "$NPMRC_READABLE"
+printf 'SECRET_PERM=%s\n' "$($S stat -c %a "${CFG_SECRET_FILE:-/etc/dsh-portal/secret}" 2>/dev/null)"
+printf 'PAM_FILE=%s\n'    "$([ -f __PAM__ ] && echo yes || echo no)"
+printf 'PY_PAM=%s\n'      "$(python3 -c 'import PAM; print("yes")' 2>/dev/null || echo no)"
+printf 'LEGACY_UNIT=%s\n' "$([ -f "$HOME/.config/systemd/user/dsh-web.service" ] && echo present || echo clean)"
+printf 'AUDIT_LINES=%s\n' "$(wc -l < __AUDIT__ 2>/dev/null)"
+"""
+
+
+def read_state(t):
+    script = (STATE_SCRIPT
+              .replace("__CONFIG__", PORTAL_CONFIG)
+              .replace("__PORTAL__", PORTAL_UNIT)
+              .replace("__WRAPPER__", WRAPPER)
+              .replace("__DSH__", DSH_BIN)
+              .replace("__SEED__", SEED_DIR)
+              .replace("__NODE__", SHARED_NODE)
+              .replace("__PAM__", PORTAL_PAM)
+              .replace("__AUDIT__", PORTAL_LOG))
+    rc, so, se = t.shell(script, timeout=60)
+    if rc != 0 and not so:
+        die(f"采集状态失败：{se.strip()[:200]}")
+    st = {}
+    for line in so.splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            st[k.strip()] = v.strip()
+    return st
+
+
+def instance_rows(st):
+    """把扁平的 I_<user>_* 键整理成行。"""
+    rows = []
+    for u in [x for x in (st.get("INSTANCE_LIST") or "").split() if x]:
+        rows.append({
+            "user": u,
+            "active": st.get(f"I_{u}_ACTIVE", "?"),
+            "pid": st.get(f"I_{u}_PID", "0"),
+            "etime": st.get(f"I_{u}_ETIME", ""),
+            "rss": st.get(f"I_{u}_RSS", ""),
+            "port": st.get(f"I_{u}_PORT", "?"),
+            "listen": st.get(f"I_{u}_LISTEN", ""),
+        })
+    return rows
+
+
+def portal_base(st):
+    bind = st.get("CFG_BIND") or ""
+    port = st.get("CFG_PORT") or "3080"
+    if not bind or bind == "0.0.0.0":
+        bind = st.get("TAILIP") or "127.0.0.1"
+    return f"http://{bind}:{port}"
+
+
+def fmt_rss(kb):
+    try:
+        n = int(kb)
+    except (TypeError, ValueError):
+        return "?"
+    return f"{n / 1024:.0f} MiB"
+
+
+def fmt_age(iso):
+    """把 ISO 时间转成「x 分钟前」。"""
+    try:
+        s = iso.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        d = (datetime.now(timezone.utc) - dt).total_seconds()
+    except Exception:
+        return ""
+    if d < 60:
+        return f"{int(d)} 秒前"
+    if d < 3600:
+        return f"{int(d / 60)} 分钟前"
+    if d < 86400:
+        return f"{d / 3600:.1f} 小时前"
+    return f"{int(d / 86400)} 天前"
+
+
+# ─────────────────────────── 子命令：状态类 ───────────────────────────
+
+def cmd_status(t, a):
+    ssh_ok(t)
+    st = read_state(t)
+    active = st.get("PORTAL_ACTIVE", "unknown")
+    enabled = st.get("PORTAL_ENABLED", "unknown")
+    rows = instance_rows(st)
+
+    if a.json:
+        print(json.dumps({
+            "target": t.label(),
+            "portal": {
+                "active": active, "enabled": enabled,
+                "pid": st.get("PORTAL_PID"), "etime": st.get("PORTAL_ETIME"),
+                "rss_kb": st.get("PORTAL_RSS"),
+                "listen": st.get("LISTEN"),
+                "bind": st.get("CFG_BIND"), "port": st.get("CFG_PORT"),
+                "backend_port_base": st.get("CFG_BACKEND_PORT_BASE"),
+                "session_days": st.get("CFG_SESSION_DAYS"),
+                "allow_users": [x for x in (st.get("CFG_ALLOW_USERS") or "").split(",") if x],
+            },
+            "tailnet_ip": st.get("TAILIP"),
+            "tailnet_node": st.get("TAILNAME"),
+            "backend_state": st.get("TS_UP"),
+            "dsh_version": st.get("DSH_VERSION"),
+            "instances": rows,
+            "url": portal_base(st),
+        }, ensure_ascii=False, indent=2))
+        return 0
+
+    dot = f"{C.G}●{C.X}" if active == "active" else f"{C.R}●{C.X}"
+    print(f"{C.B}dsh-web-ctl{C.X} {C.D}·{C.X} {t.label()}")
+    print()
+    kv("门户", f"{dot} {active} ({enabled})   {PORTAL_UNIT}")
+    kv("监听", st.get("LISTEN") or f"{C.R}未监听{C.X}")
+    if st.get("PORTAL_PID") and st["PORTAL_PID"] != "0":
+        kv("进程", f"pid {st['PORTAL_PID']} · 运行 {st.get('PORTAL_ETIME', '?')} · RSS {fmt_rss(st.get('PORTAL_RSS'))}")
+    kv("tailnet", f"{st.get('TAILIP', '?')} ({st.get('TAILNAME', '?')}) · {st.get('TS_UP', '?')}")
+    kv("dsh", st.get("DSH_VERSION") or f"{C.Y}共享运行时未装{C.X}")
+
+    print()
+    if rows:
+        print(f"{C.B}实例{C.X} {C.D}(端口 = {st.get('CFG_BACKEND_PORT_BASE') or 42000} + uid){C.X}")
+        print()
+        print(f"  {pad('用户', 14)} {pad('状态', 9)} {pad('端口', 7)} {pad('运行', 10)} {pad('RSS', 9)} 监听")
+        for r in rows:
+            col = C.G if r["active"] == "active" else C.R
+            ok_listen = f"{C.G}{r['listen']}{C.X}" if r["listen"] else f"{C.R}未监听{C.X}"
+            print(f"  {pad(r['user'], 14)} {col}{pad(r['active'], 9)}{C.X} "
+                  f"{pad(r['port'], 7)} {pad(r['etime'] or '-', 10)} "
+                  f"{pad(fmt_rss(r['rss']), 9)} {ok_listen}")
+    else:
+        print(f"  {C.Y}(还没有任何 dsh 实例 —— 用户登录门户后自动拉起){C.X}")
+
+    # 最近审计事件（目录可能 700 root —— 统一借 sudo 读）
+    rc, so, _ = t.shell('S=""; [ "$(id -u)" = 0 ] || S="sudo -n"; '
+                        f'$S tail -5 {PORTAL_LOG} 2>/dev/null', timeout=20)
+    events = [l for l in (so or "").strip().splitlines() if l.strip()]
+    if events:
+        print()
+        print(f"{C.D}最近事件{C.X}")
+        for line in events:
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            lvl = e.get("level", "?")
+            col = {"info": C.G, "warn": C.Y, "error": C.R}.get(lvl, C.D)
+            who = e.get("user") or e.get("ip") or "-"
+            print(f"  {col}{lvl:5}{C.X} {e.get('msg', '?')}  {C.D}{who} · {fmt_age(e.get('at', ''))}{C.X}")
+
+    print()
+    print(f"  {C.D}访问{C.X}  {portal_base(st)}")
+    print(f"  {C.D}登录{C.X}  Linux 账号密码（PAM）；会话默认 "
+          f"{st.get('CFG_SESSION_DAYS') or '?'} 天有效")
+    # 空闲回收策略：不显示出来，就没人能回答「为什么这个用户不被回收 / 为什么那个被停了」
+    idle = st.get("CFG_IDLE_MINUTES")
+    ibu = [x for x in (st.get("CFG_IDLE_BY_USER") or "").split(",") if x]
+    if idle not in (None, ""):
+        idle_txt = "已关闭" if str(idle) == "0" else f"{idle} 分钟"
+        if ibu:
+            over = "、".join(
+                f"{k}={'永不回收' if v == '0' else v + ' 分钟'}" for k, v in
+                (x.split("=", 1) for x in ibu))
+            idle_txt += f"（按用户覆盖：{over}）"
+        print(f"  {C.D}回收{C.X}  空闲 {idle_txt} 停掉实例；有 WebSocket 连着时不回收")
+    return 0
+
+
+def cmd_users(t, a):
+    """枚举「可能用 dsh 的账号」：有 ~/.dsh 或存在实例单元的普通用户。"""
+    ssh_ok(t)
+    script = PREAMBLE + r"""
+getent passwd | awk -F: '$3 >= 1000 && $3 < 60000 {print $1":"$6}' | while IFS=: read -r u home; do
+  $S test -d "$home/.dsh" || continue
+  printf 'U_%s_ACTIVE=%s\n' "$u" "$(systemctl --no-pager is-active dsh@$u.service 2>/dev/null)"
+  p=$(systemctl --no-pager show -p MainPID --value dsh@$u.service 2>/dev/null)
+  printf 'U_%s_PID=%s\n' "$u" "$p"
+  # 插件来源以 profile manifest 的依赖路径为准（目录存在与否不可靠：
+  # plugin remove 会留下残留目录，误判成遗留副本）
+  v=$($S python3 -c "import json
+try: print(json.load(open('$home/.dsh/profiles/web/package.json')).get('dependencies',{}).get('dsh-lan-gate',''))
+except Exception: print('')" 2>/dev/null)
+  case "$v" in
+    */opt/dsh/share*) tag="seed 共享";;
+    *.dsh/plugins*)   tag="遗留副本";;
+    "")               tag="未装";;
+    *)                tag="$v";;
+  esac
+  printf 'U_%s_PLUGIN=%s\n' "$u" "$tag"
+  # 出站代理（用户级）：用户自己的 ~/.dsh/.env
+  px=$($S grep -oiE "^[[:space:]]*(export[[:space:]]+)?https?_proxy=[[:space:]]*[^[:space:]]+" \
+      "$home/.dsh/.env" 2>/dev/null | head -1 | sed -E 's/.*=[[:space:]]*//')
+  printf 'U_%s_PROXY=%s\n' "$u" "${px:-未配（直连）}"
+done
+"""
+    rc, so, _ = t.shell(script, timeout=40)
+    st = {}
+    for line in so.splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            st[k.strip()] = v.strip()
+    users = sorted({k[2:].rsplit("_", 1)[0] for k in st if k.startswith("U_")})
+    if not users:
+        print(f"{C.Y}(还没有账号用过 dsh){C.X}")
+        return 0
+    print(f"{C.B}dsh 账号{C.X} {C.D}·{C.X} {t.label()}")
+    print()
+    print(f"  {pad('用户', 14)} {pad('实例', 9)} {pad('插件副本', 12)} {pad('出站代理', 22)} pid")
+    for u in users:
+        act = st.get(f"U_{u}_ACTIVE", "-")
+        col = C.G if act == "active" else C.D
+        tag = st.get(f"U_{u}_PLUGIN", "?")
+        tcol = C.G if "seed" in tag else (C.Y if "遗留" in tag else C.D)
+        px = st.get(f"U_{u}_PROXY", "?")
+        pcol = C.G if px.startswith("http") else C.Y
+        print(f"  {pad(u, 14)} {col}{pad(act, 9)}{C.X} {tcol}{pad(tag, 12)}{C.X} "
+              f"{pcol}{pad(px, 22)}{C.X} {st.get(f'U_{u}_PID', '-')}")
+    print()
+    print(f"  {C.D}遗留副本 = 依赖指向各自 ~/.dsh/plugins（旧单实例时代）；"
+          f"seed 共享 = 指向 /opt/dsh/share，deploy 只需更新一份。{C.X}")
+    return 0
+
+
+def cmd_url(t, a):
+    ssh_ok(t)
+    st = read_state(t)
+    print(portal_base(st))
+    return 0
+
+
+def cmd_login(t, a):
+    ssh_ok(t)
+    st = read_state(t)
+    print(portal_base(st))
+    print(f"{C.D}登录 = Linux 账号密码（PAM），没有启动 token。{C.X}", file=sys.stderr)
+    return 0
+
+
+def cmd_token(t, a):
+    print(f"{C.Y}已废弃{C.X} PAM 门户没有启动 token —— 浏览器用 Linux 账号密码登录，"
+          f"门户代为引导实例会话。")
+    return 0
+
+
+# ─────────────────────────── 子命令：控制类 ───────────────────────────
+
+def _wait_port(t, port, tries=15, gap=1):
+    script = (
+        PREAMBLE +
+        f"for i in $(seq 1 {tries}); do "
+        f"  l=$(ss -ltn 2>/dev/null | awk -v p=\":{port}\" '$4 ~ p\"$\" {{print $4; exit}}'); "
+        f'  [ -n "$l" ] && {{ echo "READY=$l"; exit 0; }}; '
+        f"  sleep {gap}; "
+        "done; "
+        'echo "READY="'
+    )
+    _, so, _ = t.shell(script, timeout=tries * gap + 20)
+    for line in so.splitlines():
+        if line.startswith("READY="):
+            return line.split("=", 1)[1].strip() or None
+    return None
+
+
+def _svc_action(t, verb, user=None):
+    """无 user = 门户；有 user = 实例。"""
+    ssh_ok(t)
+    need_root(t)
+    unit = INSTANCE_UNIT.format(user=user) if user else PORTAL_UNIT
+    port = None
+    if user:
+        rc, so, _ = t.shell(f"id -u {shlex.quote(user)}", timeout=15)
+        if rc != 0 or not so.strip():
+            die(f"用户 {user} 不存在")
+        base_s = read_state(t).get("CFG_BACKEND_PORT_BASE") or "42000"
+        try:
+            port = int(base_s) + int(so.strip())
+        except ValueError:
+            port = None
+
+    rc, so, se = t.shell(
+        PREAMBLE + f'$S systemctl --no-pager {verb} {unit}', timeout=90)
+    if rc != 0:
+        die(f"systemctl {verb} 失败：{((se or '') + (so or '')).strip()[:200]}")
+
+    listen = None
+    if verb in ("start", "restart", "enable"):
+        target_port = port or (read_state(t).get("CFG_PORT") or "3080")
+        listen = _wait_port(t, target_port)
+    elif verb == "stop":
+        t.shell(PREAMBLE + f'$S systemctl --no-pager is-active {unit}', timeout=30)
+
+    rc, so, _ = t.shell(PREAMBLE + f'systemctl --no-pager is-active {unit}', timeout=30)
+    active = so.strip() or "?"
+    line = f"{C.G}✓{C.X} {verb} {unit} → {active}"
+    if listen:
+        line += f"  {listen}"
+    elif verb in ("start", "restart", "enable") and active == "active":
+        line += f"  {C.R}但未监听{C.X}  {C.D}（看 dsh-web-ctl logs）{C.X}"
+    print(line)
+
+    # 无 USER 时的完整语义：门户 + 所有活动实例一起滚 ——
+    # 单实例时代 `restart` 重启的就是 dsh 本身，只有门户重启会让人以为「没生效」。
+    if user is None:
+        if verb in ("start", "restart", "stop"):
+            inst = _active_instance_users(t)
+            if inst:
+                print()
+                print(f"{C.B}实例{C.X} {C.D}({verb} {len(inst)} 个){C.X}")
+                for u in inst:
+                    print(f"  {C.D}…{C.X} {u}")
+                    _svc_action(t, verb, user=u)
+                return 0
+            print(f"  {C.D}(没有活动实例 —— 用户登录门户后自动拉起){C.X}")
+        elif verb in ("enable", "disable"):
+            print(f"  {C.D}开机自启只作用于门户；实例是登录后按需拉起的，不需要 enable。{C.X}")
+    return 0
+
+
+def cmd_start(t, a):
+    return _svc_action(t, "start", user=a.user)
+
+
+def cmd_stop(t, a):
+    return _svc_action(t, "stop", user=a.user)
+
+
+def cmd_restart(t, a):
+    return _svc_action(t, "restart", user=a.user)
+
+
+def cmd_enable(t, a):
+    return _svc_action(t, "enable", user=a.user)
+
+
+def cmd_disable(t, a):
+    return _svc_action(t, "disable", user=a.user)
+
+
+def cmd_logs(t, a):
+    ssh_ok(t)
+    unit = INSTANCE_UNIT.format(user=a.user) if a.user else PORTAL_UNIT
+    # 系统 journal 通常只有 root / systemd-journal 组能读 —— 统一借免密 sudo。
+    pre = 'S=""; [ "$(id -u)" = 0 ] || S="sudo -n"; '
+    cmd = f'{pre}exec $S journalctl -u {unit} --no-pager -n {a.n}' + \
+        (" -f" if a.follow else "")
+    if a.follow:
+        if t.local:
+            os.execvp("sh", ["sh", "-c", cmd])
+        # 远端同样强制 sh（zsh 不分词会把 $S 变成一个带空格的命令名）
+        inner = "sh -c " + shlex.quote(cmd)
+        os.execvp("ssh", ["ssh"] + SSH_OPTS.split() + [t.host, shlex.quote(inner)])
+    rc, so, _ = t.shell(cmd, timeout=30)
+    print((so or "").rstrip() or f"{C.Y}(无日志){C.X}")
+    return 0
+
+
+def cmd_gate(t, a):
+    """门户审计日志（JSON 行）尾部，人话化输出。"""
+    ssh_ok(t)
+    rc, so, _ = t.shell('S=""; [ "$(id -u)" = 0 ] || S="sudo -n"; '
+                        f'$S tail -n {a.n} {PORTAL_LOG} 2>/dev/null', timeout=30)
+    lines = [l for l in (so or "").strip().splitlines() if l.strip()]
+    if not lines:
+        print(f"{C.Y}(无审计日志){C.X}")
+        return 0
+    for line in lines:
+        try:
+            e = json.loads(line)
+        except ValueError:
+            print(line)
+            continue
+        lvl = e.get("level", "?")
+        col = {"info": C.G, "warn": C.Y, "error": C.R}.get(lvl, C.D)
+        fields = {k: v for k, v in e.items()
+                  if k not in ("at", "level", "msg") and v not in (None, "")}
+        extra = "  ".join(f"{k}={v}" for k, v in fields.items())
+        print(f"  {col}{lvl:5}{C.X} {e.get('msg', '?')}  "
+              f"{C.D}{extra} · {fmt_age(e.get('at', ''))}{C.X}")
+    return 0
+
+
+def cmd_peers(t, a):
+    """按用户（无用户则按 IP）聚合审计日志。"""
+    ssh_ok(t)
+    rc, so, _ = t.shell('S=""; [ "$(id -u)" = 0 ] || S="sudo -n"; '
+                        f'$S cat {PORTAL_LOG} 2>/dev/null', timeout=30)
+    agg = {}
+    for line in (so or "").splitlines():
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        key = (e.get("user") or e.get("ip") or "-")
+        d = agg.setdefault(key, {"who": key, "events": 0, "warn": 0, "error": 0,
+                                 "last": "", "kinds": {}})
+        d["events"] += 1
+        lvl = e.get("level")
+        if lvl in ("warn", "error"):
+            d[lvl] += 1
+        d["kinds"][e.get("msg", "?")] = d["kinds"].get(e.get("msg", "?"), 0) + 1
+        at = e.get("at", "")
+        if at > d["last"]:
+            d["last"] = at
+
+    rows = sorted(agg.values(), key=lambda r: r["last"], reverse=True)
+    if a.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return 0
+    if not rows:
+        print(f"{C.Y}(审计日志还没有记录){C.X}")
+        return 0
+    print(f"{C.B}访问统计{C.X} {C.D}(共 {len(rows)} 个主体){C.X}")
+    print()
+    print(f"  {pad('主体', 14)} {pad('事件', 6)}{pad('警告', 6)}{pad('错误', 6)} 最后活跃")
+    for r in rows:
+        col = C.G if not r["error"] else C.R
+        print(f"  {col}{pad(r['who'], 14)}{C.X} {pad(r['events'], 6)}{pad(r['warn'], 6)}"
+              f"{pad(r['error'], 6)} {fmt_age(r['last'])}")
+    print()
+    top = rows[0]["kinds"]
+    kinds = "  ".join(f"{k}×{v}" for k, v in sorted(top.items(), key=lambda x: -x[1])[:4])
+    print(f"  {C.D}最新主体的事件分布：{kinds}{C.X}")
+    return 0
+
+
+# ─────────────────────────── 子命令：doctor / verify ───────────────────────────
+
+def cmd_doctor(t, a):
+    ssh_ok(t)
+    st = read_state(t)
+    rows = instance_rows(st)
+    checks = []
+
+    def add(name, ok, detail="", warn=False):
+        checks.append({"check": name, "ok": bool(ok), "warn": warn, "detail": detail})
+
+    active = st.get("PORTAL_ACTIVE")
+    add("门户 active", active == "active", active or "unknown")
+    add("门户 enabled（开机自启）",
+        st.get("PORTAL_ENABLED") == "enabled", st.get("PORTAL_ENABLED") or "unknown")
+
+    listen = st.get("LISTEN") or ""
+    add("正在监听配置端口", bool(listen), listen or "未监听")
+    bind = st.get("CFG_BIND") or ""
+    if bind:
+        add("绑定的是 tailnet IP（非 0.0.0.0）",
+            listen.startswith(bind) and not listen.startswith("0.0.0.0"),
+            listen or "-")
+    else:
+        add("配置可读", False, f"{PORTAL_CONFIG} 读不到（缺免密 sudo？）")
+
+    tsup = st.get("TS_UP")
+    add("tailscale 后端就绪", tsup == "Running", tsup or "unknown")
+
+    # 端口公式单一真源：wrapper 里的基数 == 配置里的 backend_port_base
+    wbase, cbase = st.get("WRAPPER_BASE"), st.get("CFG_BACKEND_PORT_BASE")
+    add("端口公式一致（wrapper ↔ 配置）",
+        bool(wbase) and wbase == cbase,
+        f"wrapper {wbase or '?'} / config {cbase or '?'}"
+        + ("" if wbase and wbase == cbase else "  ← 两处不一致，后端端口会错位"))
+
+    add("实例包装脚本可执行", st.get("WRAPPER_OK") == "yes", WRAPPER)
+    # 出站代理是**用户级**的：dsh 自带的 dsh-http-proxy 为每个 profile 解析策略，
+    # 取值「进程环境变量 > $DSH_HOME/.env」。单元里写死地址会压掉用户自己的 .env，
+    # 所以单元只保留一个开关 NODE_USE_ENV_PROXY（Node 的 undici 默认不读 HTTP_PROXY）。
+    # 注意：模板单元 `systemctl show -p Environment` 拿不到单元文件里写的值，
+    # 必须用 `systemctl cat`。
+    _, uenv, _ = t.shell(PREAMBLE + '$S systemctl cat --no-pager '
+                         '"dsh@.service" 2>/dev/null', timeout=20)
+    has_sw = "NODE_USE_ENV_PROXY=1" in (uenv or "")
+    hard_coded = "HTTP_PROXY=" in (uenv or "")
+    add("实例单元开启 NODE_USE_ENV_PROXY", has_sw and not hard_coded,
+        ("已开启；代理地址由各用户 ~/.dsh/.env 决定（users 可查）" if has_sw and not hard_coded
+         else ("⚠ 单元里写死了 HTTP_PROXY → 会压掉用户 .env" if hard_coded
+               else "缺失 → 用户 .env 里的代理不会生效，外网请求走直连（市场目录实测 38s）")),
+        warn=True)
+
+    # 2026-10-19 事故回归防线。这三项被改回去，用户就会重新开始「任务中断」：
+    # 训练任务顶爆内存硬上限 → cgroup OOM → OOMPolicy=stop 把整个实例停掉。
+    # 注意：模板单元不能用 systemctl show 读属性，复用上面的 systemctl cat 文本。
+    us = _unit_settings(uenv)
+    mem_ok = us["MemoryMax"] is None and us["MemoryHigh"] is None
+    add("实例单元不设内存硬上限", mem_ok,
+        "MemoryMax / MemoryHigh 均未设置" if mem_ok else
+        f"⚠ MemoryMax={us['MemoryMax']} MemoryHigh={us['MemoryHigh']}"
+        "  ← agent 起的训练任务顶爆后 cgroup OOM，整个实例会被停掉")
+    no_collat = us["OOMPolicy"] == "continue" and us["KillMode"] == "process"
+    add("实例单元 OOM/停止不连坐", no_collat,
+        f"OOMPolicy={us['OOMPolicy'] or '未设置（默认 stop）'} · "
+        f"KillMode={us['KillMode'] or '未设置（默认 mixed）'}"
+        + ("" if no_collat else
+           "  ← 子进程被 OOM、或实例被停时，训练任务会一起没")
+        + f"  {C.D}（dsh-web-ctl install-unit 可修正）{C.X}")
+
+    # 部署件漂移：仓库 server/ ↔ 目标机。机器上被手改过的东西会在这里露出来 ——
+    # 2026-10-19 那个手写单元的教训是「不在版本管理里的部署件必然漂移」。
+    bdir = find_bundle_dir()
+    if bdir:
+        want = {}
+        for name, dest, _mode, _desc in SERVER_BUNDLE:
+            src = os.path.join(bdir, name)
+            if os.path.isfile(src):
+                with open(src, "rb") as fh:
+                    want[dest] = hashlib.sha256(fh.read()).hexdigest()
+        if want:
+            paths = " ".join(shlex.quote(p) for p in want)
+            _, hout, _ = t.shell(PREAMBLE + f"$S sha256sum {paths} 2>/dev/null",
+                                 timeout=30)
+            got = {}
+            for line in (hout or "").splitlines():
+                parts = line.split(None, 1)
+                if len(parts) == 2:
+                    got[parts[1].strip()] = parts[0]
+            drift = sorted(p for p, h in want.items() if got.get(p) != h)
+            add("部署件与仓库一致（server/）", not drift,
+                f"{len(want)} 件全部一致" if not drift else
+                "漂移：" + "、".join(os.path.basename(p) for p in drift)
+                + f"  {C.D}（dsh-web-ctl install 可落盘）{C.X}",
+                warn=True)
+    else:
+        add("部署件与仓库一致（server/）", False,
+            "本机找不到 server/ 目录，无法比对（请在仓库副本里跑 doctor）",
+            warn=True)
+    ver = st.get("DSH_VERSION")
+    add("共享运行时 dsh", st.get("NODE_OK") == "yes" and bool(ver),
+        ver or "缺失或不可执行")
+    add("seed shim（index/client/patch 三件套）",
+        st.get("SEED_INDEX") not in (None, "missing", "")
+        and st.get("SEED_CLIENT") not in (None, "missing", "")
+        and st.get("SEED_PATCH") not in (None, "missing", ""),
+        f"v{st.get('SEED_VER') or '?'}"
+        + ("" if st.get("SEED_PATCH") not in (None, "missing") else
+           "  ← 缺 cordis.patch.yml，plugin add 会被拒绝"))
+    npmrc_readable = st.get("NPMRC_READABLE") == "READABLE"
+    add("共享 npmrc 对普通用户可读",
+        st.get("NPMRC_OK") == "yes" and st.get("NPMRC_MAXSOCKETS", "0") not in ("0", "")
+        and npmrc_readable,
+        (f"maxsockets 条目 {st.get('NPMRC_MAXSOCKETS', '0')}，普通用户可读"
+         if npmrc_readable else
+         f"⚠ 普通用户读不到 {SHARED_NODE}/etc/npmrc → npm 静默回落 registry.npmjs.org，"
+         "镜像与 maxsockets 全部失效（root 看是正常的，所以只查存在性的检查会漏掉）"))
+    # 审计日志：权限 + 轮转。日志里有各用户登录名、失败登录记录与 tailnet 对端 IP：
+    # 0644 在多用户机上等于把这些发给全机；没有轮转则会无限长（实测 ≈12.8 KB/天）。
+    amode = st.get("AUDIT_MODE")
+    arot = st.get("AUDIT_ROTATE") == "yes"
+    add("审计日志 0640 且有轮转", amode == "640" and arot,
+        f"权限 {amode or '?'} · 轮转 {'有' if arot else '缺失'}"
+        + ("" if (amode == "640" and arot) else
+           "  ← 0640 防同机横向读取；轮转防无限增长（dsh-web-ctl install 可落盘）"))
+    add("PAM 服务文件", st.get("PAM_FILE") == "yes", PORTAL_PAM)
+    add("python3-pam 可用", st.get("PY_PAM") == "yes",
+        "yes" if st.get("PY_PAM") == "yes" else "门户无法认证")
+    sec = st.get("SECRET_PERM")
+    add("secret 文件权限 600", sec == "600", sec or "读不到", warn=(sec != "600"))
+    add("无遗留单实例单元", st.get("LEGACY_UNIT") != "present",
+        "clean" if st.get("LEGACY_UNIT") != "present" else
+        "~/.config/systemd/user/dsh-web.service 还在")
+
+    # 实例健康：每个活动实例都应真的在听自己的端口
+    bad_inst = [r for r in rows
+                if r["active"] == "active" and not r["listen"]]
+    add("活动实例端口一致",
+        not bad_inst,
+        "; ".join(f"{r['user']}(端口{r['port']})未监听" for r in bad_inst) or
+        f"{len(rows)} 个实例" if rows else "无实例")
+
+    # CLI 版本 ↔ seed package.json（deploy 之后忘了同步 manifest 会漂移）
+    sv = st.get("SEED_VER")
+    add(f"CLI 版本 v{VERSION}", (not sv) or sv == VERSION,
+        (f"seed v{sv}" if sv else "seed 无 package.json")
+        + ("" if (not sv or sv == VERSION) else f"  ← 与 CLI v{VERSION} 不一致"),
+        warn=True)
+
+    if a.json:
+        print(json.dumps({"target": t.label(), "checks": checks},
+                         ensure_ascii=False, indent=2))
+        return 0 if all(c["ok"] or c["warn"] for c in checks) else 1
+
+    print(f"{C.B}自检{C.X} {C.D}·{C.X} {t.label()}")
+    print()
+    bad = 0
+    for c in checks:
+        if c["ok"]:
+            mark = f"{C.G}✓{C.X}"
+        elif c["warn"]:
+            mark = f"{C.Y}!{C.X}"
+        else:
+            mark = f"{C.R}✗{C.X}"
+            bad += 1
+        print(f"  {mark} {pad(c['check'], 34)} {C.D}{c['detail']}{C.X}")
+    print()
+    if bad:
+        print(f"  {C.R}{bad} 项未通过{C.X}")
+    else:
+        print(f"  {C.G}全部通过{C.X}")
+    return 0 if bad == 0 else 1
+
+
+def cmd_verify(t, a):
+    """从「运行本 CLI 的这台机器」当浏览器客户端，实测门户。"""
+    ssh_ok(t)
+    st = read_state(t)
+    base = (a.url or portal_base(st)).rstrip("/")
+    if not base:
+        die("拿不到门户地址（配置读不到且无 tailnet IP）")
+    np = "--noproxy '*'"
+    jar = f"/tmp/dsh-web-ctl-{os.getpid()}.jar"
+
+    print(f"{C.B}端到端验证{C.X} {C.D}·{C.X} 客户端={C.B}本机{C.X} → {base}")
+    print()
+
+    fails = 0
+
+    def step(label, cmd, want, extra=""):
+        nonlocal fails
+        rc, so, _ = _raw(cmd, timeout=30)
+        got = so.strip()
+        ok = (got == want)
+        if not ok:
+            fails += 1
+        mark = f"{C.G}✓{C.X}" if ok else f"{C.R}✗{C.X}"
+        print(f"  {mark} {pad(label, 30)} {got or '-'}  {C.D}(期望 {want}){extra}{C.X}")
+        return ok
+
+    # 1) 健康检查（无认证）
+    rc, so, _ = _raw(f"curl -s {np} --max-time 15 {base}/__portal/healthz", timeout=30)
+    ok_h = '"ok": true' in so or '"ok":true' in so
+    if not ok_h:
+        fails += 1
+    mark = f"{C.G}✓{C.X}" if ok_h else f"{C.R}✗{C.X}"
+    print(f"  {mark} {pad('healthz 自报健康', 30)} {so.strip()[:40] or '-'}")
+
+    # 2) 未登录访问首页 → 303 去登录页
+    step("未登录首页 → 303", f"curl -s -o /dev/null -w '%{{http_code}}' {np} "
+         f"--max-time 15 {base}/", "303")
+
+    # 3) 登录页
+    rc, so, _ = _raw(f"curl -s -o /dev/null -w '%{{http_code}}' {np} "
+                     f"--max-time 15 {base}/__portal/login", timeout=30)
+    ok_l = so.strip() == "200"
+    if not ok_l:
+        fails += 1
+    mark = f"{C.G}✓{C.X}" if ok_l else f"{C.R}✗{C.X}"
+    print(f"  {mark} {pad('登录页 200', 30)} {so.strip() or '-'}")
+
+    # 4) 伪造 Host → 403
+    step("伪造 Host 被拦", f"curl -s -o /dev/null -w '%{{http_code}}' {np} "
+         f"--max-time 15 -H 'Host: invalid.example.com' {base}/", "403")
+
+    # 5) 错误密码 → 401 JSON
+    rc, so, _ = _raw(f"curl -s -o /dev/null -w '%{{http_code}}' {np} --max-time 15 "
+                     f"-X POST -H 'Content-Type: application/json' "
+                     f"-d '{{\"username\":\"__nobody__\",\"password\":\"wrong\"}}' "
+                     f"{base}/__portal/auth", timeout=30)
+    ok_a = so.strip() == "401"
+    if not ok_a:
+        fails += 1
+    mark = f"{C.G}✓{C.X}" if ok_a else f"{C.R}✗{C.X}"
+    print(f"  {mark} {pad('错误密码 → 401', 30)} {so.strip() or '-'}")
+
+    # 6) 未登录 /api → 303（不透传到后端）
+    step("未登录 /api → 303", f"curl -s -o /dev/null -w '%{{http_code}}' {np} "
+         f"--max-time 15 {base}/api/remote.mux", "303")
+
+    try:
+        os.remove(jar)
+    except OSError:
+        pass
+
+    print()
+    print(f"  {C.D}带真实账号的全链路（登录 → 实例引导 → 页面/WS）需要在浏览器里走一遍；"
+          f"服务器侧再看 dsh-web-ctl gate。{C.X}")
+    print()
+    if fails:
+        print(f"  {C.R}{fails} 项失败{C.X}")
+    else:
+        print(f"  {C.G}全部通过{C.X}")
+    return 0 if fails == 0 else 1
+
+
+# ─────────────────────────── 子命令：deploy ───────────────────────────
+
+def find_lib_dir(override=None):
+    """定位插件源码目录（须含 index.js）。
+
+    依次尝试：--dir 参数 → $DSH_LAN_GATE_REPO → 本机配置的 plugin_repo
+    → 脚本同级的 ../lib（仓库布局）→ 脚本同级的 lib（脚本在仓库根目录时）。
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    cands = []
+    if override:
+        cands += [override, os.path.join(override, "lib")]
+    env = os.environ.get("DSH_LAN_GATE_REPO")
+    if env:
+        cands += [os.path.join(env, "lib"), env]
+    repo = load_local_config().get("plugin_repo")
+    if repo:
+        cands += [os.path.join(repo, "lib"), repo]
+    cands += [
+        os.path.normpath(os.path.join(here, "..", "lib")),   # <repo>/bin/x → <repo>/lib
+        os.path.join(here, "lib"),                           # 脚本就在仓库根目录
+    ]
+    for c in cands:
+        if c and os.path.isfile(os.path.join(c, "index.js")):
+            return c
+    return None
+
+
+def cmd_deploy(t, a):
+    """上传插件源码：共享 seed 目录（新用户）+ 每用户遗留副本（旧部署），再滚实例。"""
+    ssh_ok(t)
+    need_root(t)
+    libdir = find_lib_dir(getattr(a, "dir", None))
+    if not libdir:
+        here = os.path.dirname(os.path.abspath(__file__))
+        tried = "\n".join(
+            f"      · {c}" for c in [
+                os.path.normpath(os.path.join(here, "..", "lib")),
+                os.path.join(here, "lib"),
+            ])
+        die("找不到插件源码目录（需要含 index.js）\n"
+            "    已尝试：\n"
+            f"{tried}\n"
+            "    请任选其一：\n"
+            "      · 在仓库副本里运行：<repo>/bin/dsh-web-ctl deploy\n"
+            "      · 显式指定：      dsh-web-ctl deploy --dir /path/to/dsh-lan-gate\n"
+            "      · 或设环境变量：  export DSH_LAN_GATE_REPO=/path/to/dsh-lan-gate\n"
+            "      · 或写本机配置：  ~/.config/dsh-web-ctl/config 里加一行\n"
+            "                        plugin_repo = /path/to/dsh-lan-gate")
+
+    files = [f for f in ("index.js", "client.js") if os.path.isfile(os.path.join(libdir, f))]
+    if not files:
+        die(f"{libdir} 下没有 index.js / client.js")
+    if t.local:
+        die("deploy 需要在远程主机上执行（本机就是宿主时请直接 cp）")
+
+    tmp = f"/tmp/dsh-web-ctl-deploy-{os.getpid()}"
+    t.shell(f"mkdir -p {tmp}/lib", timeout=20)
+    print(f"{C.D}源码{C.X} {libdir}")
+    try:
+        for f in files:
+            src = os.path.join(libdir, f)
+            rc, so, se = _raw(f"scp {SSH_OPTS} {shlex.quote(src)} "
+                              f"{shlex.quote(t.host + ':' + tmp + '/lib/' + f)}", timeout=120)
+            if rc != 0:
+                die(f"上传 {f} 失败：{(se or so).strip()[:200]}")
+            print(f"  {C.G}✓{C.X} 上传 {f}")
+        pkg = os.path.normpath(os.path.join(libdir, "..", "package.json"))
+        if os.path.isfile(pkg):
+            rc, so, se = _raw(f"scp {SSH_OPTS} {shlex.quote(pkg)} "
+                              f"{shlex.quote(t.host + ':' + tmp + '/package.json')}", timeout=120)
+            if rc != 0:
+                die(f"上传 package.json 失败：{(se or so).strip()[:200]}")
+            try:
+                ver = json.load(open(pkg, encoding="utf-8")).get("version", "?")
+            except (OSError, ValueError):
+                ver = "?"
+            print(f"  {C.G}✓{C.X} 上传 package.json  {C.D}(v{ver}){C.X}")
+        # cordis.patch.yml 必须一起传：package.json 的 dsh.bundle.patch 声明了它，
+        # dsh 安装时校验该文件存在 —— 缺了会「installation rejected」（v0.6.1 实测）。
+        patch = os.path.normpath(os.path.join(libdir, "..", "cordis.patch.yml"))
+        if os.path.isfile(patch):
+            rc, so, se = _raw(f"scp {SSH_OPTS} {shlex.quote(patch)} "
+                              f"{shlex.quote(t.host + ':' + tmp + '/cordis.patch.yml')}", timeout=120)
+            if rc != 0:
+                die(f"上传 cordis.patch.yml 失败：{(se or so).strip()[:200]}")
+            print(f"  {C.G}✓{C.X} 上传 cordis.patch.yml")
+        else:
+            die(f"{os.path.dirname(libdir)} 下没有 cordis.patch.yml"
+                "（package.json 的 dsh.bundle.patch 声明了它，缺了装不上）")
+
+        # 1) 落进共享 seed 目录（新用户从这里拿）
+        #    chmod a+rX 必须有：sudo cp 会继承 ssh 会话 umask，产出 640/750 时
+        #    普通用户的 pnpm 拷贝 seed 文件直接 EACCES（2026-09-27 实测）。
+        rc, so, se = t.shell(
+            PREAMBLE +
+            f'$S mkdir -p {SEED_DIR}/lib && '
+            f'$S cp {tmp}/lib/*.js {SEED_DIR}/lib/ && '
+            f'$S cp {tmp}/package.json {tmp}/cordis.patch.yml {SEED_DIR}/ && '
+            f'$S chmod -R a+rX {SEED_DIR} && '
+            f'echo SEEDED=ok', timeout=60)
+        if rc != 0 or "SEEDED=ok" not in (so or ""):
+            die(f"写入共享 seed 目录失败：{((se or '') + (so or '')).strip()[:200]}")
+        print(f"  {C.G}✓{C.X} 共享 seed 目录  →  {SEED_DIR}")
+
+        # 2) 刷新每个已装 lan-gate 的用户。
+        #    关键：pnpm 对 file: 依赖做的是**拷贝**（非链接）—— seed 目录更新后
+        #    已装用户的 node_modules 里还是旧副本，光滚动重启读不到新代码。
+        #    所以按依赖路径分类：seed 用户 remove+add 重装；legacy 用户直接覆盖。
+        rc, so, _ = t.shell(PREAMBLE + r'''
+for m in /home/*/.dsh/profiles/web/package.json; do
+  [ -f "$m" ] || continue
+  u=$(echo "$m" | sed 's|/home/||;s|/.dsh/profiles/web/package.json||')
+  dep=$(python3 -c "import json
+try: print(json.load(open('$m')).get('dependencies',{}).get('dsh-lan-gate',''))
+except Exception: print('')" 2>/dev/null)
+  printf 'U=%s DEP=%s\n' "$u" "$dep"
+done
+''', timeout=60)
+        rows = []
+        for line in (so or "").splitlines():
+            m = re.match(r"U=(\S+) DEP=(.*)", line)
+            if m and m.group(2).strip():
+                rows.append((m.group(1), m.group(2).strip()))
+        refreshed = 0
+        for u, dep in rows:
+            if SEED_DIR in dep:
+                inner = (f"cd /home/{u}/.dsh/profiles/web && "
+                         f"export PATH={SHARED_NODE}/bin:/usr/local/bin:/usr/bin:/bin && "
+                         f"export NODE_ENV=production && "
+                         f"{SHARED_NODE}/bin/dsh plugin --profile web remove dsh-lan-gate && "
+                         f"{SHARED_NODE}/bin/dsh plugin --profile web add file:{SEED_DIR}")
+                rc, rso, rse = t.shell(
+                    PREAMBLE + f'$S sudo -n -u {shlex.quote(u)} -H sh -c '
+                    f'{shlex.quote(inner)} && echo REFRESHED=ok', timeout=300)
+                if rc != 0 or "REFRESHED=ok" not in (rso or ""):
+                    print(f"  {C.Y}!{C.X} 重装 {u} 的 seed 副本失败："
+                          f"{((rse or '') + (rso or '')).strip()[-160:]}")
+                else:
+                    refreshed += 1
+            elif ".dsh/plugins" in dep:
+                home = f"/home/{u}"
+                rc, so2, se2 = t.shell(
+                    PREAMBLE +
+                    f'$S cp {tmp}/lib/*.js {home}/{LEGACY_PLUGIN_DIR}/ && '
+                    f'$S cp {tmp}/package.json {tmp}/cordis.patch.yml {home}/{LEGACY_PLUGIN_ROOT}/ && '
+                    f'$S chown -R {u}:$(id -gn {u} 2>/dev/null || {u}) {home}/{LEGACY_PLUGIN_ROOT} && '
+                    f'echo UPDATED=ok', timeout=60)
+                if rc != 0 or "UPDATED=ok" not in (so2 or ""):
+                    print(f"  {C.Y}!{C.X} 更新 {u} 的遗留副本失败：{((se2 or '') + (so2 or '')).strip()[:160]}")
+                else:
+                    print(f"  {C.G}✓{C.X} 遗留副本  →  {home}/{LEGACY_PLUGIN_ROOT}（{u}）")
+        if refreshed:
+            print(f"  {C.G}✓{C.X} seed 用户重装副本 ×{refreshed}（file: 依赖是拷贝，必须重装才吃到新代码）")
+    finally:
+        t.shell(f"rm -rf {tmp}", timeout=20)
+
+    # 3) 滚动重启活动实例（portal 不用动 —— 它是纯 Python）
+    rc, so, _ = t.shell(PREAMBLE +
+                        "systemctl list-units --no-legend 'dsh@*' 2>/dev/null "
+                        "| awk '$3==\"active\"{print $1}' | sed 's/^dsh@//;s/\\.service$//'",
+                        timeout=30)
+    users = [u for u in so.split() if u]
+    if users:
+        print()
+        print(f"{C.B}滚动重启实例{C.X}")
+        for u in users:
+            print(f"  {C.D}…{C.X} {u}")
+            _svc_action(t, "restart", user=u)
+    else:
+        print(f"  {C.D}(没有活动实例 —— 下次登录自动生效){C.X}")
+    return 0
+
+
+# ─────────────────────────── 子命令：update（共享运行时） ───────────────────────────
+
+DSH_PKG = "@deepseek-ai/dsh"
+UPDATE_UNIT = "dsh-update.service"
+
+
+def _npm_env(t):
+    """定位共享运行时里的 npm（没有就说明布局坏了）。"""
+    _, so, _ = t.shell(
+        PREAMBLE +
+        f'p={NPM_BIN}; [ -x "$p" ] || p=$(command -v npm 2>/dev/null); '
+        f'echo "NPM=$p"; echo "PREFIX={SHARED_NODE}"', timeout=30)
+    npm = prefix = None
+    for line in so.splitlines():
+        if line.startswith("NPM="):
+            npm = line[4:].strip() or None
+        elif line.startswith("PREFIX="):
+            prefix = line[7:].strip() or None
+    return npm, prefix
+
+
+def _unit_state(t):
+    """返回 (ActiveState, Result, ExecMainStatus)。
+
+    不要用 `--value` 再按位置取 —— `systemctl show -p A -p B --value` 不保证按
+    参数顺序输出（实测另一套顺序），按位置解析会张冠李戴。保留 Key=Value 按名解析。
+    """
+    _, so, _ = t.shell(
+        PREAMBLE +
+        f'$S systemctl show -p ActiveState -p Result -p ExecMainStatus '
+        f'{UPDATE_UNIT} 2>/dev/null', timeout=30)
+    props = {}
+    for line in so.splitlines():
+        k, sep, v = line.partition("=")
+        if sep:
+            props[k.strip()] = v.strip()
+    return (props.get("ActiveState") or "unknown",
+            props.get("Result", ""),
+            props.get("ExecMainStatus", ""))
+
+
+def _unit_log(t, n=10):
+    _, so, _ = t.shell(
+        PREAMBLE +
+        f'$S journalctl -u {UPDATE_UNIT} --no-pager -n {n} 2>/dev/null', timeout=30)
+    return [l for l in (so or "").strip().splitlines() if l.strip()]
+
+
+def _pkg_count(t):
+    """全局安装里 package.json 的数量 —— 判断安装是否完整（中断会明显偏少）。"""
+    _, so, _ = t.shell(
+        f'find {SHARED_NODE}/lib/node_modules/{DSH_PKG}/node_modules '
+        '-name package.json 2>/dev/null | wc -l', timeout=60)
+    v = [l for l in so.splitlines() if l.strip()]
+    return v[-1].strip() if v else ""
+
+
+def _ver_key(v):
+    """把 X.Y.Z[-alpha|beta|rc.N] 变成可比较的元组。alpha < beta < rc < 正式版。"""
+    m = re.match(r"(\d+)\.(\d+)\.(\d+)(?:-([A-Za-z]+)\.?(\d+)?)?", (v or "").strip())
+    if not m:
+        return (0, 0, 0, 0, 0)
+    maj, mi, pa, pre, n = m.groups()
+    rank = {"alpha": 0, "beta": 1, "rc": 2}.get((pre or "").lower(), 3)
+    return (int(maj), int(mi), int(pa), rank, int(n or 0))
+
+
+def _ver_cmp(a, b):
+    ka, kb = _ver_key(a), _ver_key(b)
+    return (ka > kb) - (ka < kb)
+
+
+def _dsh_info(t):
+    """返回 (已安装版本, {tag: 版本}, {查询失败的 tag})。
+
+    每个 tag 查两次 —— `npm view` 偶发失败（网络抖动）很常见，
+    静默吞掉会让后面把「查不到」误报成「tag 不存在」。
+    """
+    script = (
+        f'export PATH="{SHARED_NODE}/bin:$PATH";'
+        'echo "INSTALLED=$(dsh --version 2>/dev/null | head -1 | tr -d \'\\r\\n\')";'
+        'for tag in latest next alpha; do '
+        f'  v=$(npm view {DSH_PKG}@$tag version 2>/dev/null | tr -d \'\\r\\n\'); '
+        f'  [ -z "$v" ] && v=$(npm view {DSH_PKG}@$tag version 2>/dev/null | tr -d \'\\r\\n\'); '
+        '  echo "TAG_$tag=$v"; done'
+    )
+    _, so, _ = t.shell(script, timeout=120)
+    installed, tags, failed = None, {}, set()
+    for line in so.splitlines():
+        if line.startswith("INSTALLED="):
+            installed = line.split("=", 1)[1].strip() or None
+        elif line.startswith("TAG_"):
+            k, _, v = line[4:].partition("=")
+            k, v = k.strip(), v.strip()
+            if v:
+                tags[k] = v
+            else:
+                failed.add(k)
+    return installed, tags, failed
+
+
+def _dsh_version(t):
+    _, so, _ = t.shell(f'{DSH_BIN} --version 2>/dev/null | head -1', timeout=60)
+    return so.strip() or "?"
+
+
+def _active_instance_users(t):
+    _, so, _ = t.shell(
+        PREAMBLE +
+        "systemctl list-units --no-legend 'dsh@*' 2>/dev/null "
+        "| awk '$3==\"active\"{print $1}' | sed 's/^dsh@//;s/\\.service$//'", timeout=30)
+    return [u for u in so.split() if u]
+
+
+def cmd_update(t, a):
+    """更新共享运行时（/opt/dsh/node）里的 dsh，滚动重启活动实例。"""
+    ssh_ok(t)
+    need_root(t)
+    installed, tags, failed = _dsh_info(t)
+    if not tags:
+        die("拿不到 npm 上的任何 tag 版本（检查目标主机的 npm 与网络）")
+
+    print(f"{C.B}dsh 版本{C.X} {C.D}·{C.X} {t.label()}")
+    print()
+    kv("已安装", installed or f"{C.Y}未知{C.X}")
+    for tag in ("alpha", "next", "latest"):
+        v = tags.get(tag)
+        if not v:
+            if tag in failed:
+                kv(f"→ {tag}", f"{C.Y}查询失败（网络抖动，重跑一次）{C.X}")
+            continue
+        if not installed:
+            mark = ""
+        elif v == installed:
+            mark = f" {C.G}← 当前{C.X}"
+        elif _ver_cmp(v, installed) > 0:
+            mark = f" {C.G}(可升级){C.X}"
+        else:
+            mark = f" {C.D}(低于当前){C.X}"
+        kv(f"→ {tag}", v + mark)
+
+    want_tag = a.tag or "next"
+    if want_tag not in tags:
+        if want_tag in failed:
+            die(f"tag {want_tag} 的版本查询失败（网络抖动）—— 重跑一次本命令即可")
+        die(f"tag {want_tag} 在 npm 上不存在（本次查到：{', '.join(tags) or '无'}）")
+    target = tags[want_tag]
+
+    print()
+    if installed and _ver_cmp(target, installed) < 0 and not a.force:
+        print(f"  {C.Y}注意{C.X} {want_tag} = {target} 比当前 {installed} 更旧，已中止。")
+        print(f"  {C.D}确实要降级：加 --force{C.X}")
+        return 0
+
+    if installed == target and not a.force:
+        print(f"  {C.G}已是最新（{want_tag} = {target}），无需更新{C.X}")
+        print(f"  {C.D}想强制重装：dsh-web-ctl update --tag {want_tag} --force{C.X}")
+        return 0
+
+    if a.check:
+        print(f"  {C.Y}有可用更新{C.X}：{installed} → {target}（tag={want_tag}）")
+        print(f"  {C.D}执行：dsh-web-ctl update --tag {want_tag}{C.X}")
+        return 0
+
+    npm, prefix = _npm_env(t)
+    if not npm:
+        die("共享运行时里没有 npm（布局损坏？重新初始化 /opt/dsh/node）")
+
+    st_active, _, _ = _unit_state(t)
+    if st_active in ("active", "activating", "reloading") and not a.force:
+        die(f"{UPDATE_UNIT} 正在运行。看进度：sudo journalctl -u {UPDATE_UNIT} -f")
+
+    before = _pkg_count(t)
+    users_now = _active_instance_users(t)
+    print(f"{C.B}更新{C.X} {installed or '?'} → {target}（tag={want_tag}）")
+    print(f"  {C.D}以独立系统单元（{UPDATE_UNIT}）运行 —— "
+          f"中断本命令、断线、退出 ssh 都不影响安装{C.X}")
+    if users_now:
+        print(f"  {C.D}装完后将滚动重启实例：{' '.join(users_now)}{C.X}")
+    print()
+
+    # 安装跑在 systemd 系统单元里（root），不挂在 ssh 会话上。
+    # --prefix 指到共享运行时 —— 所有用户实例共用这一份 dsh。
+    # 默认 --prefer-offline：目标版本已用 `npm view` 解析过，再逐包 revalidate
+    # 纯属浪费（实测同棵树「联网 revalidate 卡 11 分钟」vs「缓存优先 20 秒」）。
+    offline = " --prefer-online" if a.online else " --prefer-offline"
+    start = (
+        f'$S systemctl reset-failed {UPDATE_UNIT} 2>/dev/null; '
+        f'$S systemd-run --unit={UPDATE_UNIT.removesuffix(".service")} --collect '
+        f'--description="dsh update to {want_tag}" '
+        f'--setenv=PATH={shlex.quote(SHARED_NODE + "/bin:/usr/local/bin:/usr/bin:/bin")} '
+        f'--setenv=HOME=/root '
+        f'{shlex.quote(npm)} install -g --prefix={shlex.quote(prefix or SHARED_NODE)} '
+        f'{DSH_PKG}@{want_tag} --no-audit --no-fund{offline}'
+    )
+    rc, so, se = t.shell(PREAMBLE + start, timeout=60)
+    if rc != 0:
+        die(f"启动安装单元失败：{((se or '') + (so or '')).strip()[:300]}")
+
+    # 轮询：每次都是短调用。安装本身不设超时上限 —— 不靠猜数字，
+    # 靠「随时可安全退出 + 单元自己跑完」来保证不被打断。
+    t0 = time.time()
+    spin = 0
+    while True:
+        active, result, status = _unit_state(t)
+        if active not in ("active", "activating", "reloading"):
+            break
+        spin = (spin + 1) % 4
+        print(f"\r  {C.D}安装中{'·' * spin}{' ' * (3 - spin)}"
+              f"  已用 {int(time.time() - t0)}s"
+              f"  （Ctrl-C 可安全退出，安装会继续）{C.X}", end="", flush=True)
+        time.sleep(3)
+    print("\r" + " " * 84 + "\r", end="")
+
+    # --collect 会在单元退出后把它卸载，Result 此时不一定读得到。
+    # 以「实际装出来的版本」为准，Result 只作排错线索。
+    ver = _dsh_version(t)
+    if ver != target:
+        why = f"result={result} exit={status}" if result else "单元已退出（被 collect 卸载）"
+        print(f"  {C.R}安装未成功{C.X}（{why}；dsh --version = {ver}，期望 {target}）")
+        for l in _unit_log(t, 12)[-8:]:
+            print(f"    {C.D}{l[:150]}{C.X}")
+        print(f"  {C.D}完整日志：sudo journalctl -u {UPDATE_UNIT} --no-pager{C.X}")
+        print(f"  {C.Y}重跑本命令即可（幂等）{C.X}")
+        return 1
+
+    after = _pkg_count(t)
+    print(f"  {C.G}✓{C.X} 安装完成（{int(time.time() - t0)}s）"
+          + (f"  包数 {before} → {after}" if before and after else ""))
+    print(f"  {C.G}✓{C.X} dsh 版本 → {ver}")
+
+    # 权限兜底：npm 解包会保留 tarball 里的目录 mode —— 上游包里若带 750
+    # 的目录，装出来普通用户就读不了（实例全崩，报 MODULE_NOT_FOUND，
+    # 2026-09-27 实测 projectzd 崩溃循环 900+ 次）。共享运行时必须全员可读。
+    rc, so, se = t.shell(
+        PREAMBLE + f'$S chmod -R a+rX {shlex.quote(SHARED_NODE + "/lib/node_modules")} && echo CHMOD=ok',
+        timeout=300)
+    if rc != 0 or "CHMOD=ok" not in (so or ""):
+        print(f"  {C.Y}!{C.X} 共享运行时权限修正失败：{((se or '') + (so or '')).strip()[:160]}"
+              f"  {C.D}(实例可能读不了新装文件 —— 手动跑：chmod -R a+rX {SHARED_NODE}/lib/node_modules){C.X}")
+    else:
+        print(f"  {C.G}✓{C.X} 运行时权限修正（a+rX）—— 防止 tarball 带出的 750 目录锁死普通用户")
+
+    # 滚动重启活动实例（共享运行时就位后实例要重启才吃到新版本）
+    users_now = _active_instance_users(t)
+    if users_now:
+        print()
+        print(f"{C.B}滚动重启实例{C.X}")
+        for u in users_now:
+            print(f"  {C.D}…{C.X} {u}")
+            _svc_action(t, "restart", user=u)
+    else:
+        print()
+        print(f"  {C.D}(没有活动实例 —— 下次登录自动用新版本){C.X}")
+
+    print()
+    print(f"{C.B}更新后自检{C.X}")
+    st = read_state(t)
+    print(f"  dsh 版本: {_dsh_version(t)}")
+    print(f"  门户: {st.get('PORTAL_ACTIVE', '?')} · 监听: {st.get('LISTEN') or '未监听'}")
+    rows = instance_rows(st)
+    for r in rows:
+        col = C.G if r["listen"] else C.R
+        print(f"  实例 {pad(r['user'], 12)} {col}{r['active']}{C.X} · "
+              f"{r['listen'] or '未监听'}")
+    print(f"  {C.D}完整验证请跑：dsh-web-ctl verify{C.X}")
+    return 0
+
+
+# ───────────────────────── 子命令：install ─────────────────────────
+
+def find_bundle_dir(override=None):
+    """定位服务器端部署件目录（仓库 server/，须含 portal.py）。
+
+    依次尝试：--dir → $DSH_LAN_GATE_REPO → 本机配置的 plugin_repo
+    → 脚本同级的 ../server（仓库布局）→ 脚本同级的 server。
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    cands = []
+    if override:
+        cands += [override, os.path.join(override, "server")]
+    env = os.environ.get("DSH_LAN_GATE_REPO")
+    if env:
+        cands += [os.path.join(env, "server"), env]
+    repo = load_local_config().get("plugin_repo")
+    if repo:
+        cands += [os.path.join(repo, "server"), repo]
+    cands += [
+        os.path.normpath(os.path.join(here, "..", "server")),
+        os.path.join(here, "server"),
+    ]
+    for c in cands:
+        if c and os.path.isfile(os.path.join(c, "portal.py")):
+            return c
+    return None
+
+
+class _NoOpts:
+    """内部串调子命令时用的默认选项（cmd_install_unit 会 getattr 这些字段）。"""
+    print_only = False
+    diff = False
+
+
+def cmd_install(t, a):
+    """把仓库 server/ 下的服务器端部署件落到目标机（幂等；改动前先备份）。
+
+    与 install-unit 的分工：实例模板单元内嵌在 CLI 里（INSTANCE_UNIT_TEMPLATE），
+    其余部署件是独立程序或需要单独评审的配置，留在仓库 server/，由本命令安装。
+    --check 只比对不落盘（有差异时退出码 1），用来发现"机器上被人手改过"的漂移。
+    """
+    ssh_ok(t)
+    bdir = find_bundle_dir(getattr(a, "dir", None))
+    if not bdir:
+        die("找不到服务器端部署件目录（需要含 portal.py 的 server/）。\n"
+            "    请任选其一：\n"
+            "      · 在仓库副本里运行：<repo>/bin/dsh-web-ctl install\n"
+            "      · 显式指定：      dsh-web-ctl install --dir /path/to/dsh-lan-gate\n"
+            "      · 或设环境变量：  export DSH_LAN_GATE_REPO=/path/to/dsh-lan-gate")
+
+    check = bool(getattr(a, "check", False))
+    if not check:
+        need_root(t)
+
+    files, absent = [], []
+    for name, dest, mode, desc in SERVER_BUNDLE:
+        src = os.path.join(bdir, name)
+        if os.path.isfile(src):
+            with open(src, encoding="utf-8") as fh:
+                files.append((name, dest, mode, desc, fh.read()))
+        else:
+            absent.append((name, dest, desc))
+
+    # 一个文件一个 quoted heredoc：文件内容不做任何展开，也不受本地 shell 影响。
+    parts = [PREAMBLE, "\n"]
+    for i, (name, dest, mode, desc, text) in enumerate(files):
+        delim = f"DSH_BUNDLE_{i}_EOF"
+        if not text.endswith("\n"):
+            text += "\n"
+        parts.append(f'TMP=$(mktemp)\ncat > "$TMP" <<\'{delim}\'\n{text}{delim}\n')
+        q = shlex.quote(dest)
+        if check:
+            parts.append(f'if [ ! -f {q} ]; then echo "MISSING {dest}"; '
+                         f'elif cmp -s "$TMP" {q}; then echo "SAME {dest}"; '
+                         f'else echo "DIFF {dest}"; fi\nrm -f "$TMP"\n')
+        else:
+            # 不留 .bak：这些件已经全部在 git 里，机器上的备份只会越积越多，
+            # 而且最早那份往往正是出事故的那个版本（曾有人差点拿它回滚）。
+            # 想知道"机器上有没有被手改过"，用 --check。
+            parts.append(
+                f'if [ -f {q} ] && cmp -s "$TMP" {q}; then echo "SAME {dest}"; else\n'
+                f'  mkdir -p "$(dirname {q})"\n'
+                f'  $S install -m {mode} "$TMP" {q} && echo "WROTE {dest}"; fi\n'
+                f'rm -f "$TMP"\n')
+    if not check:
+        parts.append('$S systemctl daemon-reload && echo "RELOAD=ok"\n')
+        # 真实配置只在**不存在**时从示例生成；已有配置绝不覆盖（里面有本机 IP 与策略）
+        parts.append(
+            'CFG=/etc/dsh-portal/config.json; EX=/etc/dsh-portal/config.example.json\n'
+            'if [ ! -f "$CFG" ] && [ -f "$EX" ]; then\n'
+            '  $S install -m 0640 "$EX" "$CFG" && echo "CONFIG_CREATED $CFG"\n'
+            'fi\n')
+
+    rc, so, se = t.shell("".join(parts), timeout=300)
+    if rc != 0:
+        die(f"install 失败：{(se or so or '').strip()[:300]}")
+
+    results = {}
+    for line in (so or "").splitlines():
+        for tag in ("SAME", "WROTE", "DIFF", "MISSING", "CONFIG_CREATED"):
+            if line.startswith(tag + " "):
+                results.setdefault(tag, []).append(line.split(" ", 1)[1])
+
+    print(f"{C.B}{'部署件校验' if check else '部署件安装'}{C.X} {C.D}·{C.X} {t.label()}")
+    print()
+    bad = 0
+    absent_names = {n for n, _, _ in absent}
+    for name, dest, mode, desc in SERVER_BUNDLE:
+        if name in absent_names:
+            mark, tail = f"{C.R}?{C.X}", "仓库 server/ 里没有这个文件"
+            bad += 1 if check else 0
+        elif dest in (results.get("SAME") or []):
+            mark, tail = f"{C.G}✓{C.X}", "未变化"
+        elif dest in (results.get("WROTE") or []):
+            mark, tail = f"{C.G}✓{C.X}", "已写入"
+        elif dest in (results.get("DIFF") or []):
+            mark, tail = f"{C.Y}≠{C.X}", "与仓库不一致"
+            bad += 1
+        elif dest in (results.get("MISSING") or []):
+            mark, tail = f"{C.R}✗{C.X}", "目标机上不存在"
+            bad += 1
+        else:
+            mark, tail = f"{C.Y}!{C.X}", "未确认"
+        print(f"  {mark} {pad(name, 22)} {C.D}{dest}{C.X}")
+        print(f"      {C.D}{desc} · {tail}{C.X}")
+
+    print()
+    if check:
+        if bad:
+            print(f"  {C.Y}{bad} 项与仓库不一致 —— 跑 dsh-web-ctl install 落盘{C.X}")
+        else:
+            print(f"  {C.G}目标机与仓库一致{C.X}")
+        return 1 if bad else 0
+
+    print(f"  {C.G}daemon-reload ok{C.X}")
+    if results.get("CONFIG_CREATED"):
+        print(f"  {C.Y}!{C.X} /etc/dsh-portal/config.json 原先不存在，已从示例生成 ——"
+              f" 请填入真实 bind IP 与 public_authorities")
+
+    # 实例模板单元也是部署的一部分，一并落盘（它内嵌在本文件里，见 install-unit）
+    print()
+    return cmd_install_unit(t, _NoOpts())
+
+
+# ─────────────────────── 子命令：install-unit ───────────────────────
+
+def _unit_settings(text):
+    """从单元文件文本里取关键设置。
+
+    模板单元（`dsh@.service`）**不能**用 `systemctl show` 读属性 —— 会报
+    "neither a valid invocation ID nor unit name"，只能读文件文本。
+    """
+    out = {}
+    for key in ("MemoryMax", "MemoryHigh", "KillMode", "OOMPolicy", "TasksMax"):
+        m = re.search(r"(?m)^\s*%s\s*=\s*(\S+)\s*$" % key, text or "")
+        out[key] = m.group(1) if m else None
+    return out
+
+
+def cmd_install_unit(t, a):
+    """把实例模板单元落到 INSTANCE_UNIT_PATH。
+
+    唯一真源是 INSTANCE_UNIT_TEMPLATE（本文件里），目标机那份不再手写 ——
+    手写的单元必然游离在版本管理之外，2026-10-19 的 16G 事故就是这么来的。
+    """
+    if getattr(a, "print_only", False):
+        sys.stdout.write(INSTANCE_UNIT_TEMPLATE)
+        return 0
+
+    ssh_ok(t)
+    q = shlex.quote(INSTANCE_UNIT_PATH)
+    _, cur, _ = t.shell(PREAMBLE + f"$S cat {q} 2>/dev/null", timeout=20)
+    cur = cur or ""
+
+    if getattr(a, "diff", False):
+        if cur == INSTANCE_UNIT_TEMPLATE:
+            print(f"{t.label()} · {INSTANCE_UNIT_PATH} 与 CLI 内置模板一致")
+            return 0
+        sys.stdout.writelines(difflib.unified_diff(
+            cur.splitlines(keepends=True),
+            INSTANCE_UNIT_TEMPLATE.splitlines(keepends=True),
+            fromfile=f"{INSTANCE_UNIT_PATH}（目标机现有）",
+            tofile="CLI 内置模板（install-unit 将写入的内容）", n=3))
+        return 1
+
+    need_root(t)
+
+    script = (
+        PREAMBLE
+        + "\nTMP=$(mktemp)\n"
+        + "cat > \"$TMP\" <<'DSH_UNIT_EOF'\n"
+        + INSTANCE_UNIT_TEMPLATE
+        + "DSH_UNIT_EOF\n"
+        + f"U={q}\n"
+        + 'if [ -f "$U" ] && cmp -s "$TMP" "$U"; then echo "SAME=1"; else\n'
+        + '  $S install -m 0644 "$TMP" "$U" && echo "WROTE=1"; fi\n'
+        + 'rm -f "$TMP"\n'
+        + '$S systemctl daemon-reload && echo "RELOAD=ok"\n'
+        + '$S cat "$U" 2>/dev/null\n'
+    )
+    rc, so, se = t.shell(script, timeout=60)
+    if rc != 0 or "RELOAD=ok" not in so:
+        die(f"写单元失败：{(se or so or '').strip()[:300]}")
+
+    same = "SAME=1" in so
+    final = so.split("RELOAD=ok", 1)[-1] if "RELOAD=ok" in so else so
+    us = _unit_settings(final)
+
+    mem_ok = us["MemoryMax"] is None and us["MemoryHigh"] is None
+    oom_ok = us["OOMPolicy"] == "continue"
+    kill_ok = us["KillMode"] == "process"
+    all_ok = mem_ok and oom_ok and kill_ok
+
+    print(f"{C.B}实例模板单元{C.X} {C.D}·{C.X} {t.label()}")
+    print()
+    kv("路径", INSTANCE_UNIT_PATH)
+    if same:
+        kv("状态", f"{C.G}未变化{C.X}（与 CLI 内置模板一致）")
+    else:
+        kv("状态", f"{C.G}已写入{C.X}")
+    kv("reload", f"{C.G}daemon-reload ok{C.X}")
+    kv("安全设置", "  ".join([
+        f"MemoryMax={'无' if mem_ok else us['MemoryMax']}",
+        f"KillMode={us['KillMode'] or '未设置'}",
+        f"OOMPolicy={us['OOMPolicy'] or '未设置'}",
+    ]) + (f"  {C.G}✓{C.X}" if all_ok else f"  {C.R}✗{C.X}"))
+    if not all_ok:
+        print(f"  {C.R}⚠ 与 CLI 内置模板不符，请检查 INSTANCE_UNIT_TEMPLATE{C.X}")
+
+    # 改的是模板，已跑起来的实例要重启才吃到
+    _, ls, _ = t.shell(
+        PREAMBLE + "$S systemctl list-units --type=service --state=active "
+        "--no-legend 'dsh@*' 2>/dev/null | awk '{print $1}'", timeout=20)
+    stale = []
+    for unit in (ls or "").split():
+        if not unit.endswith(".service"):
+            continue
+        _, v, _ = t.shell(PREAMBLE + f"$S systemctl show {shlex.quote(unit)} "
+                                     "-p MemoryMax --value 2>/dev/null", timeout=20)
+        v = (v or "").strip()
+        if v not in ("", "infinity"):
+            stale.append(f"{unit}（MemoryMax={v}）")
+    if stale:
+        print()
+        print(f"  {C.Y}!{C.X} 已在运行的实例仍带着旧设置，需逐个重启才生效：")
+        for s in stale:
+            print(f"      {s}")
+        print(f"  {C.D}  dsh-web-ctl restart <user>{C.X}")
+    return 0
+
+
+# ─────────────────────────── 入口 ───────────────────────────
+
+def build_parser():
+    p = argparse.ArgumentParser(
+        prog="dsh-web-ctl",
+        description="dsh web 运维 CLI（多用户门户架构）",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=("目标主机：--host → $DSH_WEB_HOST → ~/.config/dsh-web-ctl/config 的 host。\n"
+                "都没有、且本机就是宿主（有 /etc/dsh-portal）时，自动本地执行。\n"
+                "服务器端操作需要 root（免密 sudo 即可）。"),
+    )
+    p.add_argument("--host", help="目标主机（也可用 $DSH_WEB_HOST 或本机配置文件）")
+    p.add_argument("-V", "--version", action="version",
+                   version=f"dsh-web-ctl {VERSION}")
+    p.add_argument("--local", action="store_true", help="强制本地执行")
+    p.add_argument("--remote", action="store_true", help="强制远程执行")
+    p.add_argument("--json", action="store_true", help="机器可读输出（status/doctor/peers）")
+
+    sub = p.add_subparsers(dest="cmd")
+
+    def jflag(name, help_text):
+        """同时接受 `--json status` 与 `status --json`。
+
+        子解析器里必须用 default=SUPPRESS，否则它的默认值会覆盖父级已解析的结果。
+        """
+        sp_ = sub.add_parser(name, help=help_text)
+        sp_.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                         help="机器可读输出（也可写在子命令前面）")
+        return sp_
+
+    jflag("status", "门户 / 实例表 / tailnet / 最近事件")
+    sub.add_parser("users", help="用过 dsh 的账号与其实例状态")
+
+    sub.add_parser("url", help="打印访问地址")
+    sub.add_parser("login", help="打印访问地址（PAM 账号密码登录）")
+    sub.add_parser("token", help="（已废弃）PAM 门户没有启动 token")
+
+    def user_cmd(name, h):
+        sp_ = sub.add_parser(name, help=h)
+        sp_.add_argument("user", nargs="?", default=None,
+                         help="Linux 用户名；省略 = 门户本身")
+        return sp_
+
+    for name, h in (("start", "启动（门户或实例）"), ("stop", "停止"),
+                    ("restart", "重启"), ("enable", "设为开机自启"),
+                    ("disable", "取消开机自启")):
+        user_cmd(name, h)
+
+    sp = sub.add_parser("logs", help="门户或实例的 journal 日志")
+    sp.add_argument("user", nargs="?", default=None, help="Linux 用户名；省略 = 门户")
+    sp.add_argument("-n", type=int, default=50, help="行数（默认 50）")
+    sp.add_argument("-f", "--follow", action="store_true", help="持续跟随")
+
+    sp = sub.add_parser("gate", help="门户审计日志尾部")
+    sp.add_argument("-n", type=int, default=30, help="行数（默认 30）")
+
+    jflag("peers", "按用户聚合的访问统计")
+    jflag("doctor", "自检清单")
+    sp = sub.add_parser("verify", help="端到端（从本机当客户端实测门户）")
+    sp.add_argument("--url", help="覆盖门户地址（默认从目标机配置读取）")
+
+    sp = sub.add_parser("deploy", help="上传插件：共享 seed 目录 + 遗留副本，滚实例")
+    sp.add_argument("--dir", help="插件源码目录（含 index.js）；也可用 $DSH_LAN_GATE_REPO")
+
+    sp = sub.add_parser("update", help="更新共享运行时的 dsh 并滚动重启实例")
+    sp.add_argument("--tag", default="next", choices=["alpha", "next", "latest"],
+                    help="要安装的 dist-tag（默认 next）")
+    sp.add_argument("--check", action="store_true", help="只检查有没有更新，不安装")
+    sp.add_argument("--force", action="store_true", help="版本相同也强制重装")
+    sp.add_argument("--online", action="store_true",
+                    help="强制联网刷新元数据（默认走 --prefer-offline，快很多）")
+
+    sp = sub.add_parser("install-unit",
+                        help="写实例模板单元 dsh@.service（唯一真源在 CLI 内）")
+    sp.add_argument("--print", dest="print_only", action="store_true",
+                    help="只把单元内容打印到标准输出，不落盘")
+    sp.add_argument("--diff", action="store_true",
+                    help="只显示与目标机现有单元的差异（有差异时退出码 1）")
+
+    sp = sub.add_parser("install",
+                        help="安装服务器端部署件（仓库 server/ → 目标机）")
+    sp.add_argument("--dir",
+                    help="仓库根目录或 server/ 目录；也可用 $DSH_LAN_GATE_REPO")
+    sp.add_argument("--check", action="store_true",
+                    help="只比对不落盘（有差异时退出码 1）")
+
+    return p
+
+
+HANDLERS = {
+    "status": cmd_status,
+    "users": cmd_users,
+    "url": cmd_url,
+    "login": cmd_login,
+    "token": cmd_token,
+    "start": cmd_start,
+    "stop": cmd_stop,
+    "restart": cmd_restart,
+    "enable": cmd_enable,
+    "disable": cmd_disable,
+    "logs": cmd_logs,
+    "gate": cmd_gate,
+    "peers": cmd_peers,
+    "doctor": cmd_doctor,
+    "verify": cmd_verify,
+    "deploy": cmd_deploy,
+    "update": cmd_update,
+    "install-unit": cmd_install_unit,
+    "install": cmd_install,
+}
+
+
+def main(argv=None):
+    p = build_parser()
+    a = p.parse_args(argv)
+    if not a.cmd:
+        p.print_help()
+        return 0
+    if a.local and a.remote:
+        die("--local 与 --remote 不能同时用")
+
+    # 主机解析优先级：--host → $DSH_WEB_HOST → 本机配置文件（仓库里不含个人化默认值）
+    host = a.host or os.environ.get("DSH_WEB_HOST") or load_local_config().get("host")
+    t = Target(host=host, force_local=a.local, force_remote=(a.remote and bool(host)))
+    try:
+        return HANDLERS[a.cmd](t, a) or 0
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

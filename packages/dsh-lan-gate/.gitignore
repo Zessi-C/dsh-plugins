@@ -1,0 +1,36 @@
+# ── 运行时产物（绝不要提交）──
+*.log
+logs/
+.env
+.env.*
+!.env.example
+.credentials.yaml
+credentials.yaml
+
+# dsh 的会话/存储数据里可能含对话内容
+sessions/
+storages/
+
+# ── 本地覆盖（每台机器的真实 tailnet IP / 白名单不同）──
+cordis.patch.local.yml
+*.local.yml
+*.local.js
+
+# 真实生效的 profile patch（含本机 tailnet IP、登录邮箱、节点名）——只留 .example 入档
+deploy/cordis.patch.yml
+
+# ── 系统垃圾 ──
+.DS_Store
+._*
+Thumbs.db
+*.swp
+*~
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+
+# ── Node ──
+node_modules/
+npm-debug.log*
+pnpm-debug.log*

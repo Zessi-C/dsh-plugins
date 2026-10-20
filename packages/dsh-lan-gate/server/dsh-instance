@@ -1,0 +1,25 @@
+#!/bin/sh
+# 每个用户一个 dsh web 实例：只绑回环，端口 = 42000 + uid。
+# 必须与门户配置的 backend_port_base 保持一致（dsh-portal 用它反查后端）。
+set -eu
+PORT="${DSH_INSTANCE_PORT:-$((42000 + $(id -u)))}"
+
+# 用户级工具目录（codex/mnemon/mcporter 等插件要用的 CLI 在这里）。
+# 最终顺序：共享运行时(/opt/dsh/node) > 用户目录 > 系统目录 —— node/npm/pnpm/dsh
+# 永远用共享运行时，不随用户环境漂移。systemd 的 %h 在系统服务里展开为
+# /root（不是实例用户家目录），所以只能在这里按 $HOME 拼。
+USER_PATHS=""
+for d in "$HOME/.local/bin" "$HOME/.local/share/node/current/bin"; do
+  [ -d "$d" ] && USER_PATHS="$USER_PATHS$d:"
+done
+PATH="/opt/dsh/node/bin:${USER_PATHS}${PATH}"
+export PATH
+
+# 实例新建的文件/目录默认只给自己看：~/.dsh 下有 .credentials.yaml（模型凭据），
+# 多用户机上不能让同机其它账号读到。umask 只影响本进程之后创建的东西；盘上已有的
+# 旧权限由门户侧的 os.chmod 收敛（见 portal.py 的 harden_dsh_home）。
+umask 077
+
+exec /opt/dsh/node/bin/node \
+  /opt/dsh/node/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
+  --profile web --no-open --host 127.0.0.1 --port "$PORT" "$@"

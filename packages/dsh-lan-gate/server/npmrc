@@ -1,0 +1,8 @@
+registry=https://registry.npmmirror.com/
+maxsockets=4
+fetch-retries=3
+fetch-retry-mintimeout=1500
+fetch-retry-maxtimeout=6000
+# 若要复用 mihomo 代理提速（实测 tencent 经代理 8.29MB/s），取消下行注释：
+# proxy=http://127.0.0.1:7890
+# https-proxy=http://127.0.0.1:7890

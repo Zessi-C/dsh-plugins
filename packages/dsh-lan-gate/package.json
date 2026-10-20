@@ -1,0 +1,58 @@
+{
+  "name": "dsh-lan-gate",
+  "version": "0.13.2",
+  "private": true,
+  "description": "dsh-lan-gate：为多用户门户（dsh-portal + dsh@.service）提供浏览器端 shim（isLoopback 改写 + 补齐明文 HTTP 缺失的 crypto API）。v0.7.0 起宿主半包（listenHost 改写 + whois 门禁）已删除——门户架构下无生效场景，需要时翻 v0.6.1。配套 CLI dsh-web-ctl 面向门户运维",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "connection"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.4"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "scripts": {
+    "_comment": "主机不写死在这里：由 dsh-web-ctl 从 --host / $DSH_WEB_HOST / ~/.config/dsh-web-ctl/config 解析",
+    "deploy": "dsh-web-ctl deploy",
+    "logs": "dsh-web-ctl logs -n 30",
+    "status": "dsh-web-ctl status"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Zessi-C/dsh-plugins.git"
+  },
+  "homepage": "https://github.com/Zessi-C/dsh-plugins/tree/main/packages/dsh-lan-gate",
+  "license": "MIT",
+  "author": "Zessi-C",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "portal",
+    "lan",
+    "tailscale"
+  ]
+}

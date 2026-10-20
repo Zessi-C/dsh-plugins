@@ -1,0 +1,7 @@
+# dsh-lan-gate 贡献的 patch 层。
+# 宿主半包本身没有行为，这一行的作用是让本包成为 Loader 里的一个已启用条目 ——
+# dsh-client-modules 只扫描已启用的 Loader 条目来组合客户端启动图，
+# 从而把 package.json 里 dsh.client 声明的 ./client 送给浏览器。
+- insert:
+    - id: lan-gate
+      name: 'dsh-lan-gate'

@@ -1,0 +1,9 @@
+{
+  "name": "dsh-lan-gate-probe",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "host-probe4.js",
+  "exports": { ".": "./host-probe4.js" },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+}

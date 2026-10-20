@@ -1,8 +1,8 @@
 # dsh-plugins
 
 Private monorepo for the dsh plugins authored for this profile. Keeping them in
-one repository means every machine installs from the same place and picks up the
-next version with a single update.
+one repository means every machine installs from the same place, picks up the
+next version with a single update, and finds them all in one market index.
 
 | Package | What it does |
 | --- | --- |
@@ -10,6 +10,7 @@ next version with a single update.
 | [`dsh-plugin-updater`](packages/dsh-plugin-updater) | Finds and applies updates for every plugin of the current profile: npm releases, git-hosted plugins including private repositories, and plugins whose declared dsh range lags behind the running dsh. |
 | [`dsh-web-search-model`](packages/dsh-web-search-model) | Adds the provider `model` field the stock web-search settings card leaves as a composition value. |
 | [`dsh-vibe-orchestrator`](packages/dsh-vibe-orchestrator) | Vibe mode: the conversation becomes a read-only orchestrator that routes work to fast, good and expert subagents. |
+| [`dsh-lan-gate`](packages/dsh-lan-gate) | Browser shim for the multi-user portal: rewrites loopback detection and restores the crypto APIs plain HTTP lacks, plus the `dsh-web-ctl` operations CLI and its deployment files. |
 
 ## Install on a new machine
 
@@ -26,6 +27,8 @@ dsh plugin --profile web add \
   'git+https://github.com/Zessi-C/dsh-plugins.git#main&path:/packages/dsh-web-search-model'
 dsh plugin --profile web add \
   'git+https://github.com/Zessi-C/dsh-plugins.git#main&path:/packages/dsh-vibe-orchestrator'
+dsh plugin --profile web add \
+  'git+https://github.com/Zessi-C/dsh-plugins.git#main&path:/packages/dsh-lan-gate'
 ```
 
 Then add each package name to `dsh.profile.bundles` in the profile's `package.json`

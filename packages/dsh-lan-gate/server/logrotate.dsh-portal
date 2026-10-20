@@ -1,0 +1,20 @@
+# dsh-portal 审计日志轮转 —— 仓库侧基线，部署到 /etc/logrotate.d/dsh-portal。
+#
+# 为什么没有 postrotate 段（刻意的，别补）：
+#   portal.py 的 AuditLog 每次写日志都是 open(path, "a") 打开、写完即关，**不持有
+#   长期文件描述符**。logrotate 把 access.log 改名后，下一次写自然落到 logrotate
+#   用 create 新建的那个文件上，不需要任何信号。反过来，若在 postrotate 里发
+#   restart/HUP 去「让它重开文件」，只会把所有在线用户的实例连接打断一次 ——
+#   用一个不存在的需求换一次全站瞬断，纯属自伤。
+
+/var/log/dsh-portal/access.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    # 0640 root adm：日志里有各用户登录名、失败登录记录与 tailnet 对端 IP。
+    # 原来的 0644 是全机可读，多用户机上属于横向信息暴露；adm 留给需要读它的运维账号。
+    create 0640 root adm
+}

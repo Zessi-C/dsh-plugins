@@ -59,6 +59,50 @@
       ]
     },
     {
+      "name": "dsh-lan-gate",
+      "title": {
+        "en": "LAN Gate",
+        "zh": "门户访问门禁"
+      },
+      "description": {
+        "en": "Browser shim for the multi-user portal: rewrites loopback detection and restores the crypto APIs plain HTTP lacks, so the settings pages work behind dsh-portal.",
+        "zh": "多用户门户的浏览器端 shim：改写回环判定并补齐明文 HTTP 缺失的 crypto API，让设置页在 dsh-portal 后面也能正常工作。"
+      },
+      "author": "Zessi-C",
+      "homepage": "https://github.com/Zessi-C/dsh-plugins/tree/main/packages/dsh-lan-gate",
+      "repository": {
+        "url": "https://github.com/Zessi-C/dsh-plugins.git",
+        "directory": "packages/dsh-lan-gate"
+      },
+      "metadata": {
+        "keywords": [
+          "dsh",
+          "dsh-plugin",
+          "deepseek-harness",
+          "portal",
+          "lan",
+          "tailscale"
+        ],
+        "labels": [],
+        "sortKeys": {}
+      },
+      "versions": [
+        {
+          "version": "0.13.2",
+          "publishTimestamp": 1792465768,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/Zessi-C/dsh-plugins.git",
+            "commit": "0c3cb30c2e783308deb1bb0f75a4e856ec8f233e",
+            "path": "packages/dsh-lan-gate"
+          },
+          "engines": {
+            "dsh": "*"
+          }
+        }
+      ]
+    },
+    {
       "name": "dsh-plugin-updater",
       "title": {
         "en": "Plugin Updates",

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "门户访问门禁",
+    "description": "多用户门户的浏览器端 shim：改写回环判定并补齐明文 HTTP 缺失的 crypto API，让设置页在 dsh-portal 后面也能正常工作。"
+  }
+}
