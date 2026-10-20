@@ -1,6 +1,6 @@
 [Unit]
 Description=dsh-portal - PAM-authenticated multi-user front door for dsh
-Documentation=https://github.com/Zessi-C/dsh-lan-gate
+Documentation=https://github.com/Zessi-C/dsh-plugins/tree/main/packages/dsh-lan-gate
 Wants=network.target
 After=network.target
 

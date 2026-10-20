@@ -153,7 +153,7 @@ tailscale serve status ; sudo -n ss -ltnp
 | 有无 `portal.py.bak-*` / `portal*.py` 变体 | `sudo -n find / -xdev -name 'portal*'` | 命中的全是无关第三方（conda `libpq` 头文件、pytorch `skip/portal.py`、awscli 示例、docker overlay 里的 `portalocker`）→ **无备份、无变体** |
 | 有无源目录 | 全盘无任何含门户源码的目录；`/root`、`/srv`、`/data`、`/var/backups` 均无 | **无** |
 | 是否曾入过本仓库 | `git log --all --name-only \| grep -i portal` | **空：仓库历史里从未出现 `portal.py` 或 `server/`** |
-| 有无独立 GitHub 仓库 | 本地仅 `origin = https://github.com/Zessi-C/dsh-lan-gate.git`；该仓库历史中无 portal.py | **无**（注：本次审计环境无法访问 web 搜索，此条为本地证据判定，未做在线二次确认） |
+| 有无独立 GitHub 仓库 | 本地仅 `origin = https://github.com/Zessi-C/dsh-plugins/tree/main/packages/dsh-lan-gate.git`；该仓库历史中无 portal.py | **无**（注：本次审计环境无法访问 web 搜索，此条为本地证据判定，未做在线二次确认） |
 | 可复现性 | 运行时依赖：`/usr/bin/python3` 3.12.3 + `python3-pam` 0.4.2-18build2（apt）；代码仅用 stdlib | 依赖少、可读，但**代码本身无副本** |
 
 **结论：已知结论成立 —— `portal.py` 全机只有一份，无源目录、无备份、从未入仓、无独立远端仓库。

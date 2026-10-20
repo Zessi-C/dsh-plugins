@@ -92,7 +92,7 @@ INSTANCE_UNIT_PATH = "/etc/systemd/system/dsh@.service"
 
 INSTANCE_UNIT_TEMPLATE = r"""[Unit]
 Description=dsh web instance for %i (loopback only; fronted by dsh-portal)
-Documentation=https://github.com/Zessi-C/dsh-lan-gate
+Documentation=https://github.com/Zessi-C/dsh-plugins/tree/main/packages/dsh-lan-gate
 After=network.target
 
 [Service]
