@@ -177,7 +177,7 @@
       },
       "versions": [
         {
-          "version": "0.3.0",
+          "version": "0.3.1",
           "publishTimestamp": 1792477492,
           "source": {
             "type": "git",

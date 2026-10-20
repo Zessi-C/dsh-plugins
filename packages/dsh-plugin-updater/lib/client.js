@@ -11,6 +11,32 @@ window.__ModuleLoader__.load({
     const TOKEN_REF = 'DSH_PLUGIN_UPDATER_TOKEN'
 
     /**
+     * The update run in flight.
+     *
+     * A package update takes as long as pnpm does, and installing any bundle
+     * recomposes the client graph, which can remount this page. Keeping the run
+     * outside the component means a remount shows the progress instead of
+     * losing it, and the page never has to block on the operation.
+     */
+    const taskStore = { state: null, listeners: new Set() }
+
+    function publishTask(next) {
+      taskStore.state = next
+      for (const listener of [...taskStore.listeners]) listener()
+    }
+
+    /** Subscribe a component to the background run. */
+    function useBackgroundTask() {
+      const [, bump] = React.useState(0)
+      React.useEffect(() => {
+        const listener = () => bump((value) => value + 1)
+        taskStore.listeners.add(listener)
+        return () => taskStore.listeners.delete(listener)
+      }, [])
+      return taskStore.state
+    }
+
+    /**
      * Report ids the Host agent tool uses, mirrored here so a plan chosen on the
      * page reads exactly like one the agent would build.
      */
@@ -69,6 +95,10 @@ window.__ModuleLoader__.load({
       tokenCleared: '已清除',
       tokenFailed: '操作失败',
       tokenOpen: '凭据',
+      progressDone: '更新完成',
+      dismiss: '收起',
+      exempted: '已豁免',
+      undoExemption: '撤销豁免',
       local: '本地目录',
       localLinked: '本地目录（link/file），不联网探测',
       localStale: '源码比构建产物新，需要重新构建',
@@ -147,6 +177,10 @@ window.__ModuleLoader__.load({
       tokenCleared: 'Cleared',
       tokenFailed: 'Failed',
       tokenOpen: 'Credential',
+      progressDone: 'Finished',
+      dismiss: 'Hide',
+      exempted: 'exempted',
+      undoExemption: 'Undo exemption',
       local: 'Local',
       localLinked: 'Local directory (link/file); not probed over the network',
       localStale: 'Sources are newer than the build output; rebuild the package',
@@ -230,6 +264,10 @@ window.__ModuleLoader__.load({
 .pu-token-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .pu-token-input{flex:1 1 260px;min-width:200px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .pu-ok{color:var(--dsw-alias-state-success-primary);font-size:11.5px}
+.pu-task{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-1);padding:10px 14px;display:flex;flex-direction:column;gap:8px}
+.pu-task-head{display:flex;align-items:baseline;gap:10px;font-size:12.5px}
+.pu-bar-track{height:4px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);overflow:hidden}
+.pu-bar-fill{height:100%;border-radius:999px;background:var(--dsw-alias-brand-primary);transition:width .25s ease}
 `
 
     //#endregion
@@ -518,6 +556,14 @@ window.__ModuleLoader__.load({
       if (bundlesAnswer?.ok !== true || pluginsAnswer?.ok !== true) throw new Error('list failed')
       const bundles = bundlesAnswer.value
       const registries = await registryCandidates(ctx)
+      // The page offers a precise undo, so it needs the recorded exemptions.
+      let exemptions = {}
+      try {
+        const granted = await remote.listVersionExemptions?.()
+        if (granted?.ok === true) exemptions = granted.value?.exemptions ?? {}
+      } catch {
+        exemptions = {}
+      }
       const entries = await Promise.all(
         bundles.map(async (bundle) => {
           const shipped = bundle.availability === 'installation'
@@ -544,10 +590,11 @@ window.__ModuleLoader__.load({
           }
           const requirements = dshRequirements(manifest ?? {}, runtime)
           const dshOk = Object.keys(requirements.unmet).length === 0
+          const exempted = (exemptions[`${bundle.name}@${base.version}`] ?? []).includes(runtime)
           if (kind === 'local') {
-            return { ...base, kind, status: dshOk ? 'local' : 'incompatible', dsh: { ok: dshOk, requirements: requirements.unmet }, probe: { status: 'ok', note: 'local' } }
+            return { ...base, kind, exempted, status: dshOk ? 'local' : 'incompatible', dsh: { ok: dshOk, requirements: requirements.unmet }, probe: { status: 'ok', note: 'local' } }
           }
-          return { ...base, kind, status: 'checking', dsh: { ok: dshOk, requirements: requirements.unmet }, probe: { status: 'pending' }, parsed }
+          return { ...base, kind, exempted, status: 'checking', dsh: { ok: dshOk, requirements: requirements.unmet }, probe: { status: 'pending' }, parsed }
         }),
       )
       // Probe every npm and git plugin; discard results from a superseded scan.
@@ -662,7 +709,6 @@ window.__ModuleLoader__.load({
       const [state, setState] = React.useState({ phase: 'idle', report: null, selected: {}, notice: null, applied: [] })
       const [query, setQuery] = React.useState('')
       const [pending, setPending] = React.useState(null)
-      const [progress, setProgress] = React.useState(null)
       const [token, setToken] = React.useState({ open: false, configured: false, draft: '', busy: false, notice: null })
       const scanId = React.useRef(0)
 
@@ -706,86 +752,88 @@ window.__ModuleLoader__.load({
         error: filtered.filter((entry) => entry.status === 'error'),
       }
       const selectedIds = Object.keys(state.selected)
-      const busy = state.phase === 'applying'
+      const busy = taskStore.state?.running === true
 
-      /** Carry out the chosen plan through the plugin manager's own API. */
-      const applySelected = React.useCallback(async () => {
+      /**
+       * Run the chosen items in the background, one at a time.
+       *
+       * The page stays usable: progress is published to the shared task store,
+       * each item settles independently, and a failure does not cancel the rest.
+       */
+      const startRun = React.useCallback(
+        (plan) => {
+          if (plan.length === 0) return
+          void (async () => {
+            const items = plan.map((item) => ({ name: item.entry.name, status: 'pending', detail: null }))
+            publishTask({ running: true, items: [...items], done: 0, total: plan.length })
+            for (let index = 0; index < plan.length; index += 1) {
+              const item = plan[index]
+              items[index] = { ...items[index], status: 'running' }
+              publishTask({ running: true, items: [...items], done: index, total: plan.length })
+              let outcome
+              try {
+                outcome = await moveOne(ctx, t, item.entry, item.accept)
+              } catch (error) {
+                outcome = { ok: false, message: String(error?.message ?? error) }
+              }
+              items[index] = {
+                name: item.entry.name,
+                status: outcome.ok === false ? 'failed' : 'done',
+                detail: outcome.message ?? (outcome.ok === false ? t('failed') : t('appliedNow')),
+              }
+              publishTask({ running: true, items: [...items], done: index + 1, total: plan.length })
+            }
+            publishTask({ running: false, items: [...items], done: plan.length, total: plan.length })
+            // The list is stale now; refresh it without holding the run open.
+            void runScan()
+          })()
+        },
+        [ctx, runScan, t],
+      )
+
+      const applySelected = React.useCallback(() => {
         if (selectedIds.length === 0) {
           setState((current) => ({ ...current, notice: t('notSelected') }))
           return
         }
-        const plan = selectedIds.map((id) => {
-          const entry = entries.find((candidate) => candidate.id === id)
-          return { entry, accept: state.selected[id]?.accept === true }
-        })
-        setState((current) => ({ ...current, phase: 'applying', notice: null }))
-        setProgress([])
-        const outcomes = []
-        for (const item of plan) {
-          if (item.entry === undefined) continue
-          setProgress((current) => [...(current ?? []), { name: item.entry.name, phase: 'running' }])
-          const outcome = await moveOne(ctx, t, item.entry, item.accept)
-          outcomes.push({ name: item.entry.name, ...outcome })
-          setProgress((current) => (current ?? []).map((row) => (row.name === item.entry.name ? { name: row.name, phase: outcome.ok ? 'done' : 'failed', detail: outcome.message } : row)))
-        }
-        setPending(null)
-        setState((current) => ({ ...current, phase: 'ready', selected: {}, applied: outcomes }))
-        await runScan()
-      }, [ctx, entries, runScan, selectedIds, state.selected, t])
+        const plan = selectedIds
+          .map((id) => ({ entry: entries.find((candidate) => candidate.id === id), accept: state.selected[id]?.accept === true }))
+          .filter((item) => item.entry !== undefined)
+        setState((current) => ({ ...current, selected: {}, notice: null }))
+        startRun(plan)
+      }, [entries, selectedIds, startRun, state.selected, t])
 
-      const requestApply = React.useCallback(
-        (id, entry) => {
-          const needsConsent = entry === undefined ? false : !entry.dsh.ok
-          if (needsConsent) {
-            setPending({ kind: 'accept', id, entry })
-            return
-          }
-          setPending({ kind: 'confirm', id, entry })
-        },
-        [],
-      )
+      const requestApply = React.useCallback((id, entry) => {
+        if (entry === undefined) return
+        // A plugin whose declared dsh range is unmet needs an explicit choice,
+        // because accepting it can crash the application.
+        setPending({ kind: entry.dsh.ok ? 'confirm' : 'accept', id, entry })
+      }, [])
 
-      const confirmPending = React.useCallback(async () => {
+      const confirmPending = React.useCallback(() => {
         if (pending === null) return
-        const entry = pending.entry
-        const accept = pending.kind === 'accept'
+        const item = { entry: pending.entry, accept: pending.kind === 'accept' }
         setPending(null)
-        setState((current) => ({ ...current, phase: 'applying', selected: {} }))
-        setProgress([{ name: entry.name, phase: 'running' }])
-        const outcome = await moveOne(ctx, t, entry, accept)
-        setProgress([{ name: entry.name, phase: outcome.ok ? 'done' : 'failed', detail: outcome.message }])
-        setState((current) => ({ ...current, phase: 'ready', applied: [{ name: entry.name, ...outcome }] }))
-        await runScan()
-      }, [ctx, pending, runScan, t])
+        setState((current) => ({ ...current, selected: {} }))
+        startRun([item])
+      }, [pending, startRun])
 
-      const clearExemptions = React.useCallback(async () => {
-        const answer = await clearAllExemptions(ctx)
-        setState((current) => ({ ...current, notice: (answer.removed ?? 0) === 0 ? t('clearNone') : `${t('clearDone:one')} ${answer.removed}` }))
-        await runScan()
-      }, [ctx, runScan, t])
-
-      /**
-       * The version shown in the "latest" column: the release the page would
-       * install. Rows with nothing newer show the installed version instead of
-       * the registry's latest, which may legitimately be older or incompatible.
-       */
-      const latestText = (entry) => {
-        if (entry.kind === 'builtin') return entry.version ?? '—'
-        if (entry.status === 'local') return t('local')
-        if (entry.status === 'unknown') return t('unknown')
-        if (entry.probe?.compatibleLatest !== undefined) return entry.probe.compatibleLatest
-        if (entry.status === 'incompatible-update' && entry.probe?.blockedLatest !== undefined) return entry.probe.blockedLatest
-        if (entry.probe?.latest !== undefined) return entry.probe.latest
-        return entry.version ?? '—'
-      }
-
-      /** The requirement summary shown for one row. */
-      const requirementText = (entry) => {
-        const unmet = entry.dsh?.requirements ?? {}
-        const names = Object.keys(unmet)
-        if (names.length === 0) return t('satisfied')
-        return `${names[0]} ${unmet[names[0]]}`
-      }
+      /** Withdraw the exact-version exemption recorded for one plugin. */
+      const undoExemption = React.useCallback(
+        async (entry) => {
+          try {
+            const answer = await ctx.remote.pluginManager.setVersionExemption(`${entry.name}@${entry.version}`, RUNTIME_VERSION, false)
+            if (answer?.ok === false) {
+              setState((current) => ({ ...current, notice: `${t('tokenFailed')}: ${answer.error?.code ?? ''}` }))
+              return
+            }
+            await runScan()
+          } catch (error) {
+            setState((current) => ({ ...current, notice: String(error?.message ?? error) }))
+          }
+        },
+        [ctx, runScan, t],
+      )
 
       const row = (entry) => {
         const selectable = entry.status === 'update' || entry.status === 'incompatible' || entry.status === 'incompatible-update'
@@ -816,7 +864,9 @@ window.__ModuleLoader__.load({
             { className: 'pu-col-hide' },
             entry.dsh?.ok === false
               ? h(Badge, { tone: 'blocked' }, requirementText(entry))
-              : h('span', { className: 'pu-dim' }, requirementText(entry)),
+              : entry.exempted === true
+                ? h(Badge, { tone: 'muted' }, t('exempted'))
+                : h('span', { className: 'pu-dim' }, requirementText(entry)),
           ),
           h(
             'div',
@@ -829,6 +879,9 @@ window.__ModuleLoader__.load({
               : null,
             entry.status === 'incompatible' || entry.status === 'incompatible-update'
               ? h('button', { type: 'button', className: 'pu-btn', disabled: busy, onClick: () => requestApply(entry.id, entry) }, t('accept'))
+              : null,
+            entry.exempted === true
+              ? h('button', { type: 'button', className: 'pu-btn', disabled: busy, onClick: () => void undoExemption(entry) }, t('undoExemption'))
               : null,
             entry.status === 'builtin' ? h('span', { className: 'pu-dim pu-note' }, t('builtinNote')) : null,
           ),
@@ -931,7 +984,6 @@ window.__ModuleLoader__.load({
           state.phase === 'checking' ? t('checking') : t('refresh'),
         ),
         h('input', { className: 'pu-search', type: 'search', placeholder: t('searchPlaceholder'), value: query, onChange: (event) => setQuery(event.target.value) }),
-        h('button', { type: 'button', className: 'pu-btn', disabled: busy, onClick: () => void clearExemptions() }, t('clear')),
         h('button', { type: 'button', className: 'pu-btn', 'aria-expanded': token.open, onClick: toggleToken }, t('tokenOpen')),
         h('span', { className: 'pu-spacer' }),
         report === null
@@ -991,39 +1043,52 @@ window.__ModuleLoader__.load({
               ),
             )
 
-      const progressPanel =
-        progress === null
+      const task = useBackgroundTask()
+      const taskPanel =
+        task === null
           ? null
           : h(
               'div',
-              { className: 'pu-modal-backdrop' },
+              { className: 'pu-task', role: 'status', 'aria-live': 'polite' },
               h(
                 'div',
-                { className: 'pu-modal', role: 'status' },
-                h('h3', null, t('progressTitle')),
-                h(
-                  'div',
-                  { className: 'pu-progress' },
-                  progress.map((item) =>
+                { className: 'pu-task-head' },
+                h('strong', null, task.running ? t('progressTitle') : t('progressDone')),
+                h('span', { className: 'pu-dim' }, `${task.done}/${task.total}`),
+                h('span', { className: 'pu-spacer' }),
+                task.running
+                  ? null
+                  : h('button', { type: 'button', className: 'pu-btn', onClick: () => publishTask(null) }, t('dismiss')),
+              ),
+              h(
+                'div',
+                { className: 'pu-bar-track' },
+                h('div', {
+                  className: 'pu-bar-fill',
+                  style: { width: `${task.total === 0 ? 0 : Math.round((task.done / task.total) * 100)}%` },
+                }),
+              ),
+              h(
+                'div',
+                { className: 'pu-progress' },
+                task.items.map((item) =>
+                  h(
+                    'div',
+                    { className: 'pu-progress-item', key: item.name },
+                    h('span', null, item.name),
                     h(
-                      'div',
-                      { className: 'pu-progress-item', key: item.name },
-                      h('span', null, item.name),
-                      h(
-                        'span',
-                        { className: item.phase === 'failed' ? 'pu-error' : 'pu-dim' },
-                        item.phase === 'running' ? t('applying') : item.phase === 'failed' ? item.detail ?? t('failed') : item.detail ?? t('applyDone'),
-                      ),
+                      'span',
+                      { className: item.status === 'failed' ? 'pu-error' : 'pu-dim' },
+                      item.status === 'running'
+                        ? t('applying')
+                        : item.status === 'failed'
+                          ? item.detail ?? t('failed')
+                          : item.status === 'done'
+                            ? item.detail ?? t('applyDone')
+                            : '',
                     ),
                   ),
                 ),
-                state.phase === 'applying'
-                  ? null
-                  : h(
-                      'div',
-                      { className: 'pu-modal-foot' },
-                      h('button', { type: 'button', className: 'pu-btn', onClick: () => setProgress(null) }, t('cancel')),
-                    ),
               ),
             )
 
@@ -1034,7 +1099,7 @@ window.__ModuleLoader__.load({
         tokenPanel,
         body(),
         modal,
-        progressPanel,
+        taskPanel,
         report === null || (groups.updates.length === 0 && groups.blocked.length === 0) ? null : h('div', { className: 'pu-note' }, t('reloadHint')),
       )
     }
