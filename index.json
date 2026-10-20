@@ -13,6 +13,52 @@
   },
   "plugins": [
     {
+      "name": "dsh-eval-kernel",
+      "title": {
+        "en": "Persistent Interpreters",
+        "zh": "持久解释器"
+      },
+      "description": {
+        "en": "Run Python, R and JavaScript cells in long-lived interpreters whose state survives across tool calls, with harness tools callable from inside a cell.",
+        "zh": "在长驻的 Python、R、JavaScript 解释器中执行代码单元，状态跨工具调用保留，并且可以在单元内直接调用宿主工具。"
+      },
+      "author": "Zessi-C",
+      "homepage": "https://github.com/Zessi-C/dsh-plugins/tree/main/packages/dsh-eval-kernel",
+      "repository": {
+        "url": "https://github.com/Zessi-C/dsh-plugins.git",
+        "directory": "packages/dsh-eval-kernel"
+      },
+      "metadata": {
+        "keywords": [
+          "dsh",
+          "dsh-plugin",
+          "deepseek-harness",
+          "python",
+          "r",
+          "repl",
+          "notebook",
+          "interpreter"
+        ],
+        "labels": [],
+        "sortKeys": {}
+      },
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1792465045,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/Zessi-C/dsh-plugins.git",
+            "commit": "8aa78a1099300a93ecb2bbe47a9d14e2366b4a92",
+            "path": "packages/dsh-eval-kernel"
+          },
+          "engines": {
+            "dsh": "*"
+          }
+        }
+      ]
+    },
+    {
       "name": "dsh-plugin-updater",
       "title": {
         "en": "Plugin Updates",
@@ -42,11 +88,11 @@
       "versions": [
         {
           "version": "0.2.0",
-          "publishTimestamp": 1792464427,
+          "publishTimestamp": 1792465045,
           "source": {
             "type": "git",
             "url": "https://github.com/Zessi-C/dsh-plugins.git",
-            "commit": "c56795e2b1f6ab1baabc574a4cd5a6936161ac93",
+            "commit": "8aa78a1099300a93ecb2bbe47a9d14e2366b4a92",
             "path": "packages/dsh-plugin-updater"
           },
           "engines": {
@@ -87,11 +133,11 @@
       "versions": [
         {
           "version": "0.2.0",
-          "publishTimestamp": 1792463291,
+          "publishTimestamp": 1792465045,
           "source": {
             "type": "git",
             "url": "https://github.com/Zessi-C/dsh-plugins.git",
-            "commit": "433bb1814530858f7a9be0745af11aac12260227",
+            "commit": "8aa78a1099300a93ecb2bbe47a9d14e2366b4a92",
             "path": "packages/dsh-vibe-orchestrator"
           },
           "engines": {
@@ -130,11 +176,11 @@
       "versions": [
         {
           "version": "0.3.0",
-          "publishTimestamp": 1792464499,
+          "publishTimestamp": 1792465045,
           "source": {
             "type": "git",
             "url": "https://github.com/Zessi-C/dsh-plugins.git",
-            "commit": "0dab3f059fe2e5b7f1de6c28f4d153c4eb53c214",
+            "commit": "8aa78a1099300a93ecb2bbe47a9d14e2366b4a92",
             "path": "packages/dsh-web-search-model"
           },
           "engines": {
