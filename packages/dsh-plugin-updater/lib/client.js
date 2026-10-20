@@ -991,7 +991,7 @@ window.__ModuleLoader__.load({
           : h(
               'span',
               { className: 'pu-summary' },
-              `${entries.length} ${t('summary:total')} · ${groups.updates.length} ${t('summary:updates')} · ${groups.blocked.length} ${t('summary:blocked')} dsh ${report.runtime} · ${new Date(report.scannedAt).toLocaleTimeString()}`,
+              `${entries.length} ${t('summary:total')} · ${groups.updates.length} ${t('summary:updates')} · ${groups.blocked.length} ${t('summary:blocked')} ${report.runtime} · ${new Date(report.scannedAt).toLocaleTimeString()}`,
             ),
         selectedIds.length === 0
           ? null
