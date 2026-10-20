@@ -135,11 +135,11 @@
       "versions": [
         {
           "version": "1.2.0",
-          "publishTimestamp": 1792478328,
+          "publishTimestamp": 1792478369,
           "source": {
             "type": "git",
             "url": "https://github.com/Zessi-C/dsh-plugins.git",
-            "commit": "9b7e1240b841e5a1126631419dd2fad78c2eac04",
+            "commit": "f2441db349317785b576746b2460b7abca989de5",
             "path": "packages/dsh-model-thinking-levels"
           },
           "engines": {
