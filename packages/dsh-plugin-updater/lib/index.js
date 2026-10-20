@@ -185,6 +185,12 @@ export const Config =
           .boolean()
           .default(false)
           .description('Let the plugin_update agent tool apply a plan, not only report one.'),
+        gitTokenEnv: schema
+          .string()
+          .default('DSH_PLUGIN_UPDATER_TOKEN')
+          .description(
+            'Environment variable holding a token for private repositories. Read from the dsh credential store first, then the environment.',
+          ),
       })
 
 
@@ -602,6 +608,68 @@ class Updater {
     }
   }
 
+  /**
+   * The token used for private repositories.
+   *
+   * Read from the dsh credential store first, so it survives restarts and never
+   * needs to be exported by hand, then from the configured environment variable.
+   * Resolution is per call: a rotated token is picked up by the next probe
+   * without reloading the plugin.
+   *
+   * @returns {Promise<string | undefined>} The token, or undefined when none is configured.
+   */
+  async gitToken() {
+    const credentials = this.ctx.get('credentials')
+    if (credentials !== undefined) {
+      try {
+        const resolved = await credentials.resolve(this.options.gitTokenEnv)
+        if (resolved !== undefined && typeof resolved.value === 'string' && resolved.value !== '') return resolved.value
+      } catch {
+        /* fall through to the environment */
+      }
+    }
+    const ambient = process.env[this.options.gitTokenEnv]
+    return typeof ambient === 'string' && ambient !== '' ? ambient : undefined
+  }
+
+  /**
+   * Whether a token may be sent to this remote, and as which user.
+   *
+   * A token is only attached for the shared public forges, where the username is
+   * fixed by the token kind; any other host would receive someone else's secret.
+   * @param {string} url - Normalised repository URL.
+   * @returns {string | undefined} The userinfo to embed, or undefined.
+   */
+  tokenUserinfo(url) {
+    try {
+      const host = new URL(url).host
+      if (host === 'github.com') return 'x-access-token'
+      if (host === 'gitlab.com' || host === 'bitbucket.org') return 'oauth2'
+    } catch {
+      /* an unparsable URL gets no credential */
+    }
+    return undefined
+  }
+
+  /** A URL with the token embedded, for one git invocation. */
+  withToken(url, token) {
+    const user = this.tokenUserinfo(url)
+    if (token === undefined || user === undefined) return url
+    const parsed = new URL(url)
+    parsed.username = user
+    parsed.password = token
+    return parsed.toString()
+  }
+
+  /**
+   * Headers that authenticate a raw-file read against a private repository.
+   * @param {string | undefined} token - Token resolved for this probe.
+   * @returns {Record<string, string>} Headers, empty when no token applies.
+   */
+  tokenHeaders(token) {
+    return token === undefined ? {} : { authorization: `Bearer ${token}` }
+  }
+
   /** Where a repository's raw files can be read at a commit, when the host offers it. */
   rawBase(url) {
     const match = /^https:\/\/([^/]+)\/([^/]+)\/(.+)$/.exec(url)
@@ -624,14 +692,17 @@ class Updater {
    */
   async probeGit(record, signal) {
     const url = normaliseGitUrl(record.url ?? record.spec)
-    const listed = await this.run(['git', 'ls-remote', url, 'HEAD'], { signal })
+    const token = await this.gitToken()
+    const listed = await this.run(['git', 'ls-remote', this.withToken(url, token), 'HEAD'], { signal })
     if (listed.code !== 0) {
       const authProblem = /permission denied|authentication failed|could not read|terminal prompts disabled/i.test(listed.output)
       return {
         kind: 'git',
         status: 'error',
         url,
-        note: authProblem ? 'the remote rejected the request; sign in with `gh auth login` or configure an ssh key' : listed.output.split('\n')[0],
+        note: authProblem
+          ? `the remote rejected the request and no usable credential was found; store a repository token in the dsh credential store under ${this.options.gitTokenEnv}, or run \`gh auth login\``
+          : listed.output.split('\n')[0],
       }
     }
     const head = listed.output.split('\n').find((line) => line.trim() !== '')?.split(/\s+/)[0]
@@ -643,7 +714,7 @@ class Updater {
       for (const ref of [head, 'HEAD']) {
         try {
           const path = subdirectory === undefined || subdirectory === '' ? 'package.json' : `${subdirectory.replace(/^\/+|\/+$/g, '')}/package.json`
-          const answer = await this.http(`${base}/${ref}/${path}`, {}, signal)
+          const answer = await this.http(`${base}/${ref}/${path}`, this.tokenHeaders(token), signal)
           if (!answer.ok) continue
           const manifest = JSON.parse(answer.text)
           const facts = dshRequirements(manifest, this.runtimeVersion)
@@ -686,7 +757,7 @@ class Updater {
    * @returns {Promise<object | undefined>} A probe result, or undefined when the remote carries no tags.
    */
   async probeGitTag(record, url, signal) {
-    const listed = await this.run(['git', 'ls-remote', '--tags', url], { signal })
+    const listed = await this.run(['git', 'ls-remote', '--tags', this.withToken(url, await this.gitToken())], { signal })
     if (listed.code !== 0) return undefined
     const prefix = `${record.name}-v`
     const releases = listed.output
@@ -1179,6 +1250,7 @@ export function apply(ctx, config) {
     probe: config?.probe !== false,
     fallbackRegistry: String(config?.fallbackRegistry ?? 'https://registry.npmjs.org/'),
     agentToolMirrorsPlan: config?.agentToolMirrorsPlan === true,
+    gitTokenEnv: String(config?.gitTokenEnv ?? 'DSH_PLUGIN_UPDATER_TOKEN'),
   }
   const updater = new Updater(ctx, options)
 

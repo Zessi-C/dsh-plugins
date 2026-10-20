@@ -28,20 +28,32 @@
  *
  * ── Where the page lives ─────────────────────────────────────────────────────
  *
- * The page registers into `plugins.bundle.config`, keyed by this package name, so
- * it renders on this bundle's own page in the Plugins list. It must not register
- * into `plugins.item`: that slot is the shipped plugin-settings group (subagent,
- * web search, agent loop, shell), and a bundle that registers there appears
- * twice — once as a built-in settings card and once as the installed bundle.
+ * The four-field card replaces the shipped one inside the built-in settings group.
  *
- * An earlier revision shadowed the official card from `plugins.item` at
- * `priority: -1`. That worked, but it still left the bundle listed separately, and
- * it silently dropped the official card out of the built-in group. The official
- * card now renders as shipped; this page adds the `model` field beside it.
+ * `plugins.item` is a list slot partitioned by cell id, and `SlotCore.entriesOfSlot`
+ * keeps the first entry of each cell after sorting by `(priority, order)` — so
+ * within one id the lowest priority renders. This package registers into the
+ * shipped `web-search` cell at `priority: -1`; the shipped card stays mounted at
+ * `priority: 0` and does not render. The group therefore shows ONE web search
+ * card, with the `model` field added to the shipped three.
+ *
+ *   // dsh-client-ui-slots / SlotCore.entriesOfSlot
+ *   for (const entry of rec.entries) {          // already sorted by priority
+ *     const cell = kind === "list" ? entry.options.id : void 0;
+ *     if (seenCells.has(cell)) continue;        // first entry of the cell wins
+ *     seenCells.add(cell);
+ *     heads.push(entry);
+ *   }
+ *
+ * This package is also a bundle, so the Plugins list shows it and asks for the
+ * bundle's own page through `plugins.bundle.config`. That registration answers
+ * with nothing, because the settings belong on the card above and not in a second
+ * place.
  *
  * ── Cost ─────────────────────────────────────────────────────────────────────
  *
- * The form below is a faithful port of the official client component
+ * Taking over the card means the whole card belongs to this package. The four
+ * fields below are a faithful port of the official client component
  * (`apiKeyEnv` through the credential domain, `baseURL`, `maxUses`) plus a new
  * `model` field. Fields added or changed upstream will not be inherited
  * automatically; see README.md, "Maintenance".
@@ -79,6 +91,14 @@ window.__ModuleLoader__.load({
 
 		/** Form field name used to stage the credential control. */
 		const API_KEY_FIELD = "apiKey";
+
+		/**
+		 * Cell id and order of the shipped "Web search" card in `plugins.item`.
+		 * Reusing the id puts this package in that cell, where a lower `priority`
+		 * wins the cell and the shipped card does not render.
+		 */
+		const SHADOWED_CARD_ID = "web-search";
+		const SHADOWED_CARD_ORDER = 40;
 
 		/** Dictionary namespace owned by this page. */
 		const NS = "settings.webSearchModel";
@@ -331,6 +351,15 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 
+		/**
+		 * Renders nothing: this bundle's settings live on the shipped web-search card,
+		 * not on the bundle's own page.
+		 * @returns null.
+		 */
+		function BundleConfigPlaceholder() {
+			return null;
+		}
+
 		//#region 控制器
 		/**
 		 * Bridges the web-search-deepseek settings scope and the credential domain
@@ -500,16 +529,31 @@ window.__ModuleLoader__.load({
 				card.refreshCredential(ref);
 			}), "dsh-web-search-model: credential invalidations");
 
-			// `plugins.bundle.config` renders on this bundle's own page in the Plugins
-			// list, keyed by the package name. Registering in `plugins.item` made the
-			// bundle appear twice: once as a built-in settings card and once as the
-			// installed bundle. The official card keeps its own entry there.
+			// Two registrations, one visible surface.
+			//
+			// `plugins.item` is the shipped plugin-settings group. This package takes
+			// over its "web-search" cell at `priority: -1` so the group shows one card
+			// with four fields rather than the shipped three plus a second card beside
+			// them. The official registration stays mounted at `priority: 0` and simply
+			// does not render.
+			ctx.effect(() => ctx.configForms.whileServed([WEB_SEARCH_NS], () => ctx.slots.inject("plugins.item", () => ctx.slots.register({
+				name: "plugins.item",
+				id: SHADOWED_CARD_ID,
+				order: SHADOWED_CARD_ORDER,
+				priority: -1,
+				label: () => t("title"),
+				locale: NS,
+				inject: () => card.inject()
+			}, WebSearchCard))), "dsh-web-search-model: card");
+
+			// This package is also a bundle, so the Plugins list shows it and asks for
+			// this key while rendering the bundle's own page. Answering with nothing
+			// keeps the settings out of that page instead of showing them twice.
 			ctx.effect(() => ctx.configForms.whileServed([WEB_SEARCH_NS], () => ctx.slots.inject("plugins.bundle.config", () => ctx.slots.register({
 				name: "plugins.bundle.config",
 				key: "dsh-web-search-model",
-				locale: NS,
-				inject: () => card.inject()
-			}, WebSearchCard))), "dsh-web-search-model: page");
+				locale: NS
+			}, BundleConfigPlaceholder))), "dsh-web-search-model: bundle page");
 		}
 		//#endregion
 

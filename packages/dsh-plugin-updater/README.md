@@ -45,6 +45,37 @@ Set on the `plugin-updater` row in the profile's `cordis.patch.yml`:
 | `fallbackRegistry` | `https://registry.npmjs.org/` | Registry asked when the profile's pnpm registry does not answer. |
 | `agentToolMirrorsPlan` | `false` | Let `plugin_update action: "apply"` change plugins. |
 
+## Private repositories
+
+A private repository cannot be read anonymously, so a token is needed. The
+updater resolves one in this order:
+
+1. **The dsh credential store** (recommended). It keeps every secret in
+   `~/.dsh/.credentials.yaml` under `refs:`, which survives restarts and never
+   enters a shell profile or a repository. dsh ships no command that writes it,
+   so add the entry from a plugin settings page that edits credentials, or edit
+   the file directly:
+
+   ```yaml
+   refs:
+     DEEPSEEK_API_KEY: <existing value>
+     DSH_PLUGIN_UPDATER_TOKEN: <your token>
+   ```
+
+   Restart dsh once. Every later probe re-reads the value, so a rotated token
+   needs no further change.
+
+2. **The environment variable** named by `gitTokenEnv`
+   (`DSH_PLUGIN_UPDATER_TOKEN` by default), for a one-off run or a container.
+
+3. **git's own credential helper**, when neither is set: a machine that has run
+   `gh auth login` reads private repositories without any configuration here.
+
+The token is only ever sent to `github.com`, `gitlab.com` and `bitbucket.org`.
+Any other host — an internal GitLab, say — never receives it. It is embedded in
+a single git invocation and never written back to the profile manifest or shown
+in a report.
+
 ## Requirements and limits
 
 - `git` on PATH for git-hosted plugins. A private GitHub repository works when `gh auth login` configured git's credential helper; otherwise the row says so.
