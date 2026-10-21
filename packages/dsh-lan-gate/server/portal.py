@@ -981,15 +981,18 @@ class Portal:
         if cfg.get("public_authority"):
             public_authority = cfg["public_authority"]
 
-        # 客户端自己要求「别缓存我这页」。dsh 的浏览器半包会在每次页面加载时打这个
-        # 标记并记住它（localStorage）：之后**所有**页面响应都带 Cache-Control:
-        # no-store。为什么要这么大的动作：点「退出登录」后按浏览器后退，撞到的
-        # 是 bfcache 里那份 dsh 页面 —— 它的 SPA 会照常渲染，看起来像没退出去，
-        # 而那段页面里的脚本根本不会重跑，谁也拦不住。只要那份页面从一开始就不进
-        # bfcache，后退就只能是真实的网络请求，门户就会把未登录的人送回登录页。
-        # 同一个浏览器里打过标记之后，登录页自身也带 no-store，避免旧登录页被恢复。
-        no_cache = cfg.get("client_no_cache") and header_first(
-            headers, "x-dsh-portal-no-cache", "") == "1"
+        # 页面一律不进 bfcache（client_no_cache，默认开）。
+        #
+        # 为什么必须是服务端强制、并且默认全开：点「退出登录」后按浏览器后退，
+        # 撞到的是 bfcache 里那份 dsh 页面 —— 它的 SPA 会照常渲染，看起来像没
+        # 退出去，而那段页面里的脚本根本不会重跑，谁也拦不住。唯一可靠的办法是
+        # 让它从一开始就别进 bfcache：页面响应带 no-store，后退就只能变成真实
+        # 网络请求，门户把未登录的人送回登录页。
+        #
+        # 曾经想过「由浏览器半包发个 X-Dsh-Portal-No-Cache 头来通知门户」——
+        # 行不通：**导航/刷新时浏览器不会给顶层文档请求带自定义头**，页面永远
+        # 等不到这个头。所以这里没有任何开关条件，客户端也不需要声明什么。
+        no_cache = bool(cfg.get("client_no_cache", True))
 
         # —— 门户自身端点 ——
         if path == cfg["health_path"]:

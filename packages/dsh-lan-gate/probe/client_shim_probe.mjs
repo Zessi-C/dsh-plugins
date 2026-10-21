@@ -222,6 +222,34 @@ function check(name, ok, detail = '') {
     JSON.stringify(el && el.props))
 }
 
+// 5b) 用公开域名访问门户：origin 是 dsh.example:7998，门户把 Host 改写成 127.0.0.1:42001
+//     ——「Host 和 origin 对不上」不代表「不在门户后面」，按钮必须照样出现。
+{
+  const env = makeEnv({
+    hostname: 'dsh.103724.xyz', port: '7998',
+    meResponse: { user: 'zeiss' },
+    meHeaders: { 'X-Dsh-Portal-Host': '127.0.0.1:42001' },
+  })
+  const { registrations, fireInject } = run(env)
+  await new Promise((r) => setTimeout(r, 20))
+  fireInject()
+  check('5b 用域名访问门户时按钮仍注册',
+    registrations.some((r) => r.id === 'lan-gate-signout'), JSON.stringify(registrations))
+}
+
+// 5c) 没有反代（Host 与页面 origin 一致）→ 不是门户，不注册
+{
+  const env = makeEnv({
+    hostname: 'dsh.example', port: '7998',
+    meResponse: { user: 'zeiss' },
+    meHeaders: { 'X-Dsh-Portal-Host': 'dsh.example:7998' },
+  })
+  const { registrations, fireInject } = run(env)
+  await new Promise((r) => setTimeout(r, 20))
+  fireInject()
+  check('5c Host 与 origin 一致 → 不注册', !registrations.some((r) => r.id === 'lan-gate-signout'))
+}
+
 // 6) 门户标记：文档响应带 X-Dsh-Portal: 1 就记下标记，并且以后每次都告诉门户「别缓存」
 {
   const env = makeEnv({
@@ -235,9 +263,8 @@ function check(name, ok, detail = '') {
   fireInject()
   const docCalls = env.calls.filter((c) => String(c.url).startsWith('http'))
   check('6a 入口处向自己的文档地址发过一次标记请求', docCalls.length === 1, JSON.stringify(env.calls.map((c) => c.url)))
-  check('6b 首次标记请求的头是 X-Dsh-Portal-No-Cache: 0',
-    docCalls[0] && docCalls[0].opts.headers && docCalls[0].opts.headers['X-Dsh-Portal-No-Cache'] === '0',
-    JSON.stringify(docCalls[0] && docCalls[0].opts))
+  check('6b 文档探测不带自定义头（浏览器导航时也带不了）',
+    docCalls[0] && !docCalls[0].opts.headers, JSON.stringify(docCalls[0] && docCalls[0].opts))
   check('6c 文档响应带 X-Dsh-Portal 后写下了本地标记',
     env.sandbox.localStorage.getItem('dsh-lan-gate.portal') === '1',
     String(env.sandbox.localStorage.getItem('dsh-lan-gate.portal')))

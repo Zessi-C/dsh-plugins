@@ -359,11 +359,12 @@
 
       /* ── 门户标记 ─────────────────────────────────────────────────
        * 需要回答「我是在门户后面吗」，有两种来源：
-       *   1. 登录页响应里的 X-Dsh-Portal 头 → 写下标记，之后每次页面加载都带上
-       *      X-Dsh-Portal-No-Cache 请求头，门户据此给所有页面响应 no-store；
+       *   1. 登录页响应里的 X-Dsh-Portal 头 → 写下标记，之后每次页面加载都认它；
        *   2. 老门户没有那个头 → 退回 /__portal/me 探针（只在没有标记时做一次）。
        *
-       * 为什么要 no-store：点「退出登录」后按浏览器后退，撞到的是 bfcache 里
+       * no-store 由门户在服务端强制（client_no_cache，默认开），不靠本文件：
+       * 导航/刷新时浏览器不会给顶层文档请求带自定义头，客户端没法「通知」门户。
+       * 为什么必须 no-store：点「退出登录」后按浏览器后退，撞到的是 bfcache 里
        * 那份 dsh 页面 —— 它的 SPA 会照常渲染，看起来像没退出去，而那份页面里的
        * 脚本根本不会重跑。只要它从一开始就不进 bfcache，后退只能是真实网络请求，
        * 门户就会把未登录的人送回登录页。
@@ -394,8 +395,10 @@
       }
 
       /**
-       * 页面入口的那次文档请求：拿到门户标记就记下来并告知门户「别缓存这些页」。
-       * 文档响应带 no-store 时浏览器不会把页面放进 bfcache，后退于是变成真实请求。
+       * 页面入口的那次文档请求：拿到门户标记就记下来。
+       * 不再带任何自定义请求头 —— 导航/刷新时浏览器根本不会给顶层文档请求带
+       * 自定义头（曾经为此设计过 X-Dsh-Portal-No-Cache，行不通）；「页面不进
+       * bfcache」已经改由门户在服务端强制（no-store），这里只负责认门户。
        */
       function declareCachedPage() {
         let declared = storageGet(PORTAL_MARK_KEY) === '1';
@@ -408,10 +411,6 @@
             method: 'GET',
             credentials: 'same-origin',
             cache: 'no-store',
-            headers: {
-              // 带着标记去问：门户据此在响应上加 no-store 与 X-Dsh-Portal。
-              'X-Dsh-Portal-No-Cache': declared ? '1' : '0',
-            },
           }).then(function (res) {
             if (!portalHeaderPresent(res)) return;
             storageSet(PORTAL_MARK_KEY, '1');
@@ -456,7 +455,13 @@
             });
           }).then(function (verdict) {
             clearTimeout(timer);
-            finish(verdict.ok && (verdict.viaHost ? verdict.viaHost.toLowerCase().indexOf(want) < 0 : true));
+            if (!verdict.ok) { finish(false); return; }
+            // 用公开域名访问时，Host 也被改写成后端回环端口，和页面 origin 的域名
+            // 天然对不上 —— 这里只要求「有 X-Dsh-Portal-Host 就说明被反代过」，
+            // 但「Host 等于页面 origin」说明前面根本没有反代，不算门户。
+            const sameAsPage = !!verdict.viaHost
+              && verdict.viaHost.toLowerCase() === want.toLowerCase();
+            finish(!sameAsPage);
           }, function () {
             clearTimeout(timer);
             finish(false);

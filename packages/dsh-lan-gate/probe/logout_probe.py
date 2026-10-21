@@ -178,23 +178,24 @@ async def main():
     status, headers, body = await request(portal_port, "GET", "/__portal/login")
     check("E 普通登录页没有退出提示", "已经退出登录" not in body.decode("utf-8"), "")
 
-    # G. 客户端打「别缓存我这页」标记 → 页面响应带 no-store（bfcache 兜底的地基）
-    #    1) 不带标记头：上游响应原样（不强制 no-store）；
-    #    2) 带 X-Dsh-Portal-No-Cache: 1：上游响应被加上 no-store，且内容长度仍然正确。
-    status, headers, _ = await request(portal_port, "GET", "/", cookie=login_cookie)
-    plain = dict(headers).get("cache-control")
-    check("G1 未打标记时不动上游缓存头", plain != "no-store", f"cache-control={plain}")
+    # G. 页面响应一律 no-store（服务端强制，不依赖任何自定义请求头）
+    #    —— 导航/刷新时浏览器不会给顶层文档请求带自定义头，所以判据只能是服务端。
+    status, headers, body = await request(portal_port, "GET", "/", cookie=browser_cookie)
+    d = dict(headers)
+    check("G1 页面响应带 no-store（不要求任何请求头）", d.get("cache-control") == "no-store",
+          f"cache-control={d.get('cache-control')}")
+    check("G2 响应体没被截断（长度与内容一致）",
+          d.get("content-length") is not None and int(d["content-length"]) == len(body)
+          and b"fake dsh" in body,
+          f"content-length={d.get('content-length')} body={len(body)}")
+    check("G3 上游的 Set-Cookie 仍在", any(k == "set-cookie" for k, _ in headers))
 
-    status, headers, body = await request(
-        portal_port, "GET", "/", cookie=browser_cookie,
-        extra={"X-Dsh-Portal-No-Cache": "1"})
-    cache = dict(headers).get("cache-control")
-    length = dict(headers).get("content-length")
-    check("G2 打了标记 → 页面响应 no-store", cache == "no-store", f"cache-control={cache}")
-    check("G3 响应体没被截断（长度与内容一致）",
-          length is not None and int(length) == len(body) and b"fake dsh" in body,
-          f"content-length={length} body={len(body)}")
-    check("G4 上游的 Set-Cookie 仍在", any(k == "set-cookie" for k, _ in headers))
+    # 关闭开关后回到原样：不强制 no-store（留给需要老行为的部署）
+    p.cfg["client_no_cache"] = False
+    status, headers, _ = await request(portal_port, "GET", "/", cookie=browser_cookie)
+    check("G4 client_no_cache=false 时不改上游缓存头",
+          dict(headers).get("cache-control") != "no-store", str(dict(headers).get("cache-control")))
+    p.cfg["client_no_cache"] = True
 
     # H. 登录页自己带 X-Dsh-Portal（浏览器半包靠它认出「我在门户后面」）
     status, headers, _ = await request(portal_port, "GET", "/__portal/login")
