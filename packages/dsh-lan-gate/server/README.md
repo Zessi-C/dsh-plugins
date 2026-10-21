@@ -27,6 +27,26 @@
 - `bind` → 本机 tailnet IP（`<TAILNET_IP>`）
 - `public_authorities[]` → 同一个 IP 的两种 authority（`<TAILNET_IP>:3080`、`<TAILNET_IP>`）
 
+### `bind_extra` —— 额外监听地址（可选，默认 `[]`）
+
+`bind` 只能填一个地址，可有些场景需要**同时**听两个：主 `bind` 是 tailnet IP
+（给别的设备用），而本机浏览器想走 `http://127.0.0.1:3080`。这时加：
+
+```json
+"bind_extra": ["127.0.0.1"]
+```
+
+- 每个额外地址起一个 `asyncio.start_server`，**共用同一个 handler 和同一个 Portal 实例**，
+  会话、失败计数、锁定期、空闲回收全部共享（不是多进程）。
+- 额外地址与主 `bind` 一样进受信 authority 集合（`addr` 与 `addr:port`，`port` 跟主配置走，
+  不硬编码端口号）。
+- 某个额外地址绑不上（地址不存在、被占用）只记 `warn` 日志，**不影响主监听**。
+- 只填回环或内网地址。它和 `public_authorities` 的区别很重要：
+  `public_authorities` 只是**放宽 Host 校验**，而 Host 校验正是反 DNS 重绑定的防线
+  （见 `authority_ok()` 上的注释）——只为让 `127.0.0.1` 能打开就去改它是**错的**，
+  因为那会让任意 Origin 在回环端口上通过校验。`bind_extra` 是**真的在那个地址上监听**，
+  Host 校验仍只认"我们实际绑定的地址"。
+
 其余键保留线上约定路径，**不要**改：
 
 - `secret_file = /etc/dsh-portal/secret`（0600，由 portal.py 首启自动生成，**绝不入仓**）

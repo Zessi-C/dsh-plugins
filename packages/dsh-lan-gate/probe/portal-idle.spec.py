@@ -12,6 +12,7 @@
 跑法：python3 probe/portal-idle.spec.py
 """
 
+import asyncio
 import importlib.util
 import inspect
 import os
@@ -428,6 +429,104 @@ class LogrotateConfTest(unittest.TestCase):
                              if line.strip().startswith("#"))
         self.assertIn('open(path, "a")', comments)
         self.assertIn("长期", comments)
+
+
+class BindExtraTest(unittest.IsolatedAsyncioTestCase):
+    """bind_extra：主 bind 之外再听几个地址，且**只**放行真的在听的 authority。
+
+    核心不变量：Host 校验是反 DNS 重绑定的防线。所以 bind_extra 必须
+    「真的在那个地址上监听」，而不是「把地址塞进 public_authorities」——
+    后者会让回环端口上任意 Origin 都过校验。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = dict(portal.DEFAULT_CONFIG)
+        self.base["secret_file"] = os.path.join(self.tmp.name, "secret")
+        self.base["log_file"] = os.path.join(self.tmp.name, "access.log")
+        # public_authorities 一条都不留：本类验证的是「绑定即受信」，
+        # 不能被显式白名单掩盖。
+        self.base["public_authorities"] = []
+
+    def portal_for(self, **over):
+        cfg = dict(self.base)
+        cfg.update(over)
+        return portal.Portal(cfg)
+
+    # —— 默认值与向后兼容 ——
+
+    def test_default_is_empty(self):
+        self.assertEqual(portal.DEFAULT_CONFIG["bind_extra"], [])
+
+    def test_missing_key_is_backward_compatible(self):
+        # 老 config.json 没有这个键：authority 集合必须与改动前完全一致。
+        p = self.portal_for(bind="10.0.0.5", port=3080)
+        self.assertEqual(
+            sorted(p.allowed_authorities),
+            ["10.0.0.5", "10.0.0.5:3080", "127.0.0.1:3080", "localhost:3080"])
+
+    # —— 受信 authority ——
+
+    def test_extra_bind_is_a_trusted_authority(self):
+        p = self.portal_for(bind="10.0.0.5", port=3080, bind_extra=["127.0.0.1"])
+        self.assertEqual(p.authority_ok("127.0.0.1:3080"), "127.0.0.1:3080")
+        self.assertEqual(p.authority_ok("127.0.0.1"), "127.0.0.1")
+        # 主 bind 一个都没少。
+        self.assertEqual(p.authority_ok("10.0.0.5:3080"), "10.0.0.5:3080")
+
+    def test_extra_bind_follows_configured_port(self):
+        # 端口是配置项：非默认端口下，绝不能凭空冒出一个 :3080。
+        p = self.portal_for(bind="10.0.0.5", port=9999, bind_extra=["127.0.0.1"])
+        self.assertEqual(p.authority_ok("127.0.0.1:9999"), "127.0.0.1:9999")
+        self.assertIsNone(p.authority_ok("127.0.0.1:3080"))
+
+    def test_unknown_host_still_rejected(self):
+        p = self.portal_for(bind="10.0.0.5", port=3080, bind_extra=["127.0.0.1"])
+        for host in ("evil.example", "evil.example:3080", "10.0.0.6:3080"):
+            self.assertIsNone(p.authority_ok(host), host)
+
+    def test_blank_entries_are_ignored(self):
+        p = self.portal_for(bind="10.0.0.5", port=3080,
+                            bind_extra=["", "  ", "127.0.0.1"])
+        self.assertEqual(
+            sorted(p.allowed_authorities),
+            ["10.0.0.5", "10.0.0.5:3080", "127.0.0.1", "127.0.0.1:3080",
+             "localhost:3080"])
+
+    # —— 真实绑定行为 ——
+
+    async def test_extra_bind_listens_and_shares_one_handler(self):
+        # 主 bind 用 127.0.0.1:0（临时端口），额外地址用 ::1 —— 都不需要 root。
+        p = self.portal_for(bind="127.0.0.1", port=0)
+        main = await asyncio.start_server(p.handle, "127.0.0.1", 0)
+        port = main.sockets[0].getsockname()[1]
+        try:
+            extra = await asyncio.start_server(p.handle, "::1", port)
+        finally:
+            main.close()
+            await main.wait_closed()
+        try:
+            self.assertEqual(extra.sockets[0].getsockname()[1], port)
+        finally:
+            extra.close()
+            await extra.wait_closed()
+
+    async def test_unbindable_extra_is_skipped(self):
+        # 绑不上的地址只 WARN，不能让主监听跟着崩。
+        with self.assertRaises(OSError):
+            srv = await asyncio.start_server(
+                lambda r, w: None, "192.0.2.99", 0)   # TEST-NET-1，必然不可绑
+            srv.close()
+
+    # —— 部署件一致性 ——
+
+    def test_example_config_has_bind_extra(self):
+        import json
+        path = os.path.join(SERVER, "config.example.json")
+        with open(path, encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        self.assertEqual(cfg["bind_extra"], [])
 
 
 if __name__ == "__main__":

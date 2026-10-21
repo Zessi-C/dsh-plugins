@@ -191,6 +191,7 @@ tailscale serve status ; sudo -n ss -ltnp
 | `bind` | `<TAILNET_IP>` | `"<TAILNET_IP>"` |
 | `public_authorities[0]` | `<TAILNET_IP>:3080` | `"<TAILNET_IP>:3080"` |
 | `public_authorities[1]` | `<TAILNET_IP>` | `"<TAILNET_IP>"` |
+| `bind_extra` | `[]` 或 `["127.0.0.1"]` | `[]`（入库保持空；`127.0.0.1` 是回环，不算泄密但入库无意义） |
 
 自查结论：
 

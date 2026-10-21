@@ -53,6 +53,10 @@ except ImportError:  # pragma: no cover - 环境缺依赖时给出明确提示
 DEFAULT_CONFIG = {
     "bind": "127.0.0.1",
     "port": 3090,
+    # 除主 bind 之外再监听的地址（列表）。典型用法：主 bind 是 Tailscale IP，
+    # 这里加 "127.0.0.1" 让本机浏览器也能走 localhost。这些地址和主 bind 一样是
+    # 受信 authority（Host 校验仍只认"实际绑定的地址"）。只给回环或内网地址用。
+    "bind_extra": [],
     # 浏览器可能用哪些 authority 访问本门户（host 或 host:port）。
     # 会自动加上「bind:port」与「bind」。**不要**把任意值交给客户端决定：
     # 请求头的 Host 必须命中这里，否则直接拒绝 —— 否则「Origin 与 Host 同源」
@@ -459,6 +463,12 @@ class Portal:
         allowed = {a.lower().strip() for a in (cfg.get("public_authorities") or [])}
         bind, port = cfg["bind"], cfg["port"]
         allowed |= {f"{bind}:{port}", bind, f"localhost:{port}", f"127.0.0.1:{port}"}
+        # 额外绑定的地址同样受信（它们和主 bind 一样是"我们真的在听"的地址）。
+        # 只跟主 bind 共享同一个 port —— 不要硬编码任何具体端口号。
+        for extra in (cfg.get("bind_extra") or []):
+            extra = (extra or "").strip()
+            if extra:
+                allowed |= {extra.lower(), f"{extra.lower()}:{port}"}
         self.allowed_authorities = {a for a in allowed if a}
 
     def authority_ok(self, host_header):
@@ -1348,7 +1358,24 @@ async def serve(cfg):
     portal.log("info", "portal listening", bind=host, port=port,
                mode="all-system-users" if not cfg.get("allow_users") else "allowlist",
                idle_minutes=cfg["idle_minutes"])
+    # 额外监听地址：同一个 handler，同一个 Portal 状态（会话、限流都共享）。
+    # 某个额外地址绑不上（例如该地址此刻不存在）只记 warn，不影响主监听。
+    extras = []
+    for extra in (cfg.get("bind_extra") or []):
+        extra = (extra or "").strip()
+        if not extra or extra == host:
+            continue
+        try:
+            srv = await asyncio.start_server(portal.handle, extra, port, backlog=128)
+        except OSError as exc:
+            portal.log("warn", "extra bind failed", bind=extra, port=port,
+                       detail=f"{exc.__class__.__name__}: {exc}")
+            continue
+        extras.append(srv)
+        portal.log("info", "portal listening (extra)", bind=extra, port=port)
     asyncio.create_task(portal.reaper())
+    for srv in extras:
+        await srv.start_serving()
     async with server:
         await server.serve_forever()
 

@@ -1,6 +1,7 @@
 {
   "bind": "<TAILNET_IP>",
   "port": 3080,
+  "bind_extra": [],
   "public_authorities": [
     "<TAILNET_IP>:3080",
     "<TAILNET_IP>"
