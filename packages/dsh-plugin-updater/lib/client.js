@@ -47,46 +47,73 @@ window.__ModuleLoader__.load({
     const zh = {
       tab: '插件更新',
       refresh: '检查更新',
-      checking: '正在检查…',
-      refreshTip: '重新探测 npm registry、git 远端和 dsh 兼容范围',
-      'summary:total': '插件',
-      'summary:updates': '可更新',
-      'summary:blocked': '超出 dsh',
+      checking: '正在检查',
+      refreshTip: '重新核对 npm 仓库、Git 远端与 dsh 版本要求',
+      'summary:total': '个插件',
+      'summary:updates': '个可更新',
+      'summary:blocked': '个高于 dsh',
       sectionUpdates: '可更新',
       sectionBlocked: '版本不兼容',
-      sectionCurrent: '已是最新',
+      sectionUnknown: '无法核对',
       sectionLocal: '本地插件',
       sectionBuiltin: '随 dsh 安装',
+      sectionCurrent: '已是最新',
       sectionError: '读取失败',
-      update: '更新',
-      'updateTo:one': '更新到',
-      accept: '接受风险',
-      acceptTitle: '记录精确版本豁免',
-      acceptBodyHead: '将在 profile 的 compatibility.json 中记录这条精确版本豁免：',
-      acceptBodyTail: '这只是在启动检查里放行，插件的代码是否真的适配由你判断；Harness 官方说明该操作可能导致崩溃或数据丢失。',
-      acceptConfirm: '记录豁免',
-      cancel: '取消',
-      apply: '应用所选',
-      applying: '正在应用…',
-      'selected:one': '已选',
-      applyDone: '应用完成',
-      reloadHint: '有些插件需要重启 dsh 才会加载新代码；重启前页面会保留原状态。',
       colName: '插件',
-      colVersion: '已装',
-      colLatest: '最新',
+      colVersion: '当前版本',
+      colLatest: '目标版本',
       colDsh: 'dsh 要求',
       colActions: '操作',
+      update: '更新',
+      'updateTo:one': '更新至',
+      accept: '接受风险',
+      acceptTitle: '记录精确版本豁免',
+      acceptBodyHead: '将在 profile 的 compatibility.json 中登记该版本可在当前 dsh 上运行：',
+      acceptBodyTail: '此项仅放宽启动检查。插件代码是否真正兼容需自行判断，Harness 提示该操作可能导致崩溃或数据丢失。',
+      acceptConfirm: '确认登记',
+      cancel: '取消',
+      apply: '应用',
+      applying: '处理中',
+      selected: '已选',
+      'selected:one': '项',
+      applyDone: '已完成',
+      progressTitle: '更新进行中',
+      progressDone: '更新完成',
+      dismiss: '收起',
+      notSelected: '尚未选择任何项目',
+      reloadHint: '部分插件需重启 dsh 后才会加载新代码。',
       latestCompatible: '可用',
       noCompatible: '无兼容版本',
-      blockedLatestHead: '最新版不声明支持当前 dsh：',
+      blockedLatestHead: '最新版未声明支持当前 dsh：',
       upToDate: '已是最新',
       satisfied: '满足',
-      sectionUnknown: '无法核对',
+      blocked: '不满足',
+      exempted: '已豁免',
+      undoExemption: '撤销豁免',
       unknown: '未知',
       unverified: '私有仓库或离线，浏览器端无法读取版本',
+      local: '本地目录',
+      localLinked: '本地目录（link/file），不联网核对',
+      localStale: '源码新于构建产物，需重新构建',
+      builtinNote: '随 dsh 升级',
+      requirements: '未满足的要求',
+      registry: '仓库',
+      gitRemote: 'Git 远端',
+      gitHeadHead: '远端 HEAD',
+      errorNote: '读取失败',
+      failed: '失败',
+      empty: '当前没有已安装的第三方插件。',
+      unavailable: '此 profile 中插件管理器不可用。',
+      noRemote: '浏览器无法访问插件管理器服务。',
+      noRepair: '内置插件随 dsh 升级。',
+      needsRestart: '需重启 dsh',
+      appliedNow: '已生效',
+      searchPlaceholder: '筛选插件',
+      showAll: '显示全部',
+      releaseChannel: '发布通道',
       tokenTitle: '私有仓库凭据',
-      tokenHint: '读取私有仓库需要的 token，保存在 dsh 凭据存储里（~/.dsh/.credentials.yaml），只发给 github.com、gitlab.com、bitbucket.org。',
-      tokenPlaceholder: '粘贴 GitHub token（repo 权限即可）',
+      tokenHint: '用于读取私有仓库的 token。保存在 dsh 凭据存储（~/.dsh/.credentials.yaml），仅发送至 github.com、gitlab.com、bitbucket.org。',
+      tokenPlaceholder: '粘贴 GitHub token（需 repo 权限）',
       tokenSave: '保存',
       tokenClear: '清除',
       tokenConfigured: '已配置',
@@ -95,79 +122,77 @@ window.__ModuleLoader__.load({
       tokenCleared: '已清除',
       tokenFailed: '操作失败',
       tokenOpen: '凭据',
-      progressDone: '更新完成',
-      dismiss: '收起',
-      exempted: '已豁免',
-      undoExemption: '撤销豁免',
-      local: '本地目录',
-      localLinked: '本地目录（link/file），不联网探测',
-      localStale: '源码比构建产物新，需要重新构建',
-      builtinNote: '随 dsh 一起升级',
-      requirements: '不满足的要求',
-      registry: 'registry',
-      gitRemote: 'git 远端',
-      gitHeadHead: '远端 HEAD',
-      errorNote: '读取失败',
-      clear: '清除全部豁免',
-      'clearDone:one': '已清除豁免数',
-      clearNone: '没有可清除的豁免',
-      empty: '没有已安装的第三方插件。',
-      unavailable: '插件管理器在此 profile 中不可用。',
-      noRemote: '浏览器端无法访问插件管理器服务。',
-      noRepair: '仅随 dsh 安装的插件：升级 dsh 本身即可。',
-      needsRestart: '需要重启 dsh',
-      appliedNow: '已生效',
-      failed: '失败',
-      notSelected: '未选择任何更新。',
-      progressTitle: '正在更新',
-      target: '目标',
-      searchPlaceholder: '筛选插件…',
-      showAll: '显示全部',
-      releaseChannel: '发布通道',
     }
 
     const en = {
       tab: 'Plugin updates',
       refresh: 'Check for updates',
-      checking: 'Checking…',
-      refreshTip: 'Probe the npm registry, git remotes and dsh requirement ranges again',
+      checking: 'Checking',
+      refreshTip: 'Re-check the npm registry, Git remotes and dsh requirement ranges',
       'summary:total': 'plugins',
       'summary:updates': 'updates',
       'summary:blocked': 'above dsh',
-      sectionUpdates: 'Updates',
+      sectionUpdates: 'Updates available',
       sectionBlocked: 'Not compatible',
-      sectionCurrent: 'Up to date',
+      sectionUnknown: 'Unverified',
       sectionLocal: 'Local plugins',
       sectionBuiltin: 'Shipped with dsh',
+      sectionCurrent: 'Up to date',
       sectionError: 'Unreadable',
+      colName: 'Plugin',
+      colVersion: 'Installed',
+      colLatest: 'Target',
+      colDsh: 'dsh requirement',
+      colActions: 'Actions',
       update: 'Update',
       'updateTo:one': 'Update to',
       accept: 'Accept risk',
       acceptTitle: 'Record an exact-version exemption',
-      acceptBodyHead: "Record in the profile's compatibility.json that this exact version may run on this dsh:",
-      acceptBodyTail: 'It only relaxes the startup check; whether the plugin code really fits is your judgement, and the Harness warns that running it may cause crashes or data loss.',
+      acceptBodyHead: "Record in the profile's compatibility.json that this version may run on this dsh:",
+      acceptBodyTail: 'This only relaxes the startup check. Whether the plugin code really fits is your judgement, and the Harness warns that running it may cause crashes or data loss.',
       acceptConfirm: 'Record exemption',
       cancel: 'Cancel',
-      apply: 'Apply selected',
-      applying: 'Applying…',
-      'selected:one': 'selected',
-      applyDone: 'Applied',
+      apply: 'Apply',
+      applying: 'Working',
+      selected: 'selected',
+      'selected:one': 'item(s)',
+      applyDone: 'Done',
+      progressTitle: 'Updating',
+      progressDone: 'Update finished',
+      dismiss: 'Hide',
+      notSelected: 'Nothing is selected',
       reloadHint: 'Some plugins load their new code only after dsh restarts.',
-      colName: 'Plugin',
-      colVersion: 'Installed',
-      colLatest: 'Latest',
-      colDsh: 'dsh requirement',
-      colActions: 'Actions',
       latestCompatible: 'available',
       noCompatible: 'none compatible',
       blockedLatestHead: 'newest release does not declare this dsh:',
       upToDate: 'Up to date',
       satisfied: 'met',
-      sectionUnknown: 'Unverified',
+      blocked: 'unmet',
+      exempted: 'exempted',
+      undoExemption: 'Undo exemption',
       unknown: 'unknown',
       unverified: 'private or offline; the browser cannot read the version',
+      local: 'Local',
+      localLinked: 'Local directory (link/file); not checked over the network',
+      localStale: 'Sources are newer than the build output',
+      builtinNote: 'Updated with dsh',
+      requirements: 'Unmet requirements',
+      registry: 'registry',
+      gitRemote: 'git remote',
+      gitHeadHead: 'remote HEAD',
+      errorNote: 'Could not read',
+      failed: 'Failed',
+      empty: 'No third-party plugins are installed.',
+      unavailable: 'The plugin manager is unavailable in this profile.',
+      noRemote: 'The browser cannot reach the plugin manager service.',
+      noRepair: 'Shipped with dsh; update dsh itself.',
+      needsRestart: 'Restart dsh',
+      appliedNow: 'Applied',
+      searchPlaceholder: 'Filter plugins',
+      showAll: 'Show all',
+      releaseChannel: 'Release channel',
       tokenTitle: 'Private repository credential',
-      tokenHint: 'Token for private repositories. It is stored in the dsh credential store (~/.dsh/.credentials.yaml) and sent only to github.com, gitlab.com and bitbucket.org.',
+      tokenHint: 'Token for private repositories. Stored in the dsh credential store (~/.dsh/.credentials.yaml) and sent only to github.com, gitlab.com and bitbucket.org.',
       tokenPlaceholder: 'Paste a GitHub token with repo scope',
       tokenSave: 'Save',
       tokenClear: 'Clear',
@@ -177,35 +202,6 @@ window.__ModuleLoader__.load({
       tokenCleared: 'Cleared',
       tokenFailed: 'Failed',
       tokenOpen: 'Credential',
-      progressDone: 'Finished',
-      dismiss: 'Hide',
-      exempted: 'exempted',
-      undoExemption: 'Undo exemption',
-      local: 'Local',
-      localLinked: 'Local directory (link/file); not probed over the network',
-      localStale: 'Sources are newer than the build output; rebuild the package',
-      builtinNote: 'Updated with dsh',
-      requirements: 'Unmet requirements',
-      registry: 'registry',
-      gitRemote: 'git remote',
-      gitHeadHead: 'remote HEAD',
-      errorNote: 'Could not read',
-      clear: 'Clear all exemptions',
-      'clearDone:one': 'cleared exemptions',
-      clearNone: 'Nothing to clear',
-      empty: 'No third-party plugins are installed.',
-      unavailable: 'The plugin manager is unavailable in this profile.',
-      noRemote: 'The browser cannot reach the plugin manager service.',
-      noRepair: 'Shipped with dsh; update dsh itself.',
-      needsRestart: 'Restart dsh to load the new code',
-      appliedNow: 'Applied',
-      failed: 'Failed',
-      notSelected: 'Nothing was selected.',
-      progressTitle: 'Updating',
-      target: 'Target',
-      searchPlaceholder: 'Filter plugins…',
-      showAll: 'Show all',
-      releaseChannel: 'Release channel',
     }
 
     //#endregion
@@ -213,61 +209,94 @@ window.__ModuleLoader__.load({
     //#region styles
 
     const CSS = `
-.pu-root{display:flex;flex-direction:column;gap:16px;padding:4px 0 24px;color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5}
-.pu-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.pu-root{
+  --pu-gap:16px;
+  --pu-cols:26px minmax(180px,1.6fr) minmax(84px,.7fr) minmax(84px,.7fr) minmax(120px,1fr) minmax(160px,auto);
+  display:flex;flex-direction:column;gap:20px;padding:8px 0 32px;
+  color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.55;
+  font-variant-numeric:tabular-nums;
+}
+.pu-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-bottom:4px;
+  border-bottom:1px solid var(--dsw-alias-border-l1)}
 .pu-spacer{flex:1}
-.pu-summary{color:var(--dsw-alias-label-secondary);font-size:12px}
-.pu-btn{appearance:none;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border-radius:8px;padding:5px 12px;font:inherit;font-size:12.5px;cursor:pointer;transition:background .12s,border-color .12s,opacity .12s}
+.pu-context{color:var(--dsw-alias-label-secondary);font-size:12px;letter-spacing:.01em}
+.pu-btn{appearance:none;border:1px solid var(--dsw-alias-border-l1);background:transparent;
+  color:var(--dsw-alias-label-primary);border-radius:7px;padding:5px 11px;font:inherit;font-size:12.5px;
+  cursor:pointer;transition:background .12s,border-color .12s,opacity .12s;white-space:nowrap}
 .pu-btn:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l2)}
-.pu-btn:disabled{opacity:.55;cursor:default}
+.pu-btn:disabled{opacity:.5;cursor:default}
 .pu-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.pu-btn-sm{padding:3px 9px;font-size:12px;border-radius:6px}
 .pu-btn-primary{background:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);color:#fff}
-.pu-btn-primary:hover:not(:disabled){background:var(--dsw-alias-brand-primary);opacity:.92}
-.pu-search{flex:0 0 200px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);border-radius:8px;padding:5px 10px;font:inherit;font-size:12.5px}
-.pu-search:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.pu-btn-primary:hover:not(:disabled){filter:brightness(1.06)}
+.pu-filter{flex:0 0 190px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base);
+  color:var(--dsw-alias-label-primary);border-radius:7px;padding:5px 10px;font:inherit;font-size:12.5px}
+.pu-filter:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
 .pu-section{display:flex;flex-direction:column;gap:8px}
-.pu-section-head{display:flex;align-items:baseline;gap:8px;font-size:12px;font-weight:600;letter-spacing:.02em;color:var(--dsw-alias-label-secondary);text-transform:none}
-.pu-count{font-weight:400;color:var(--dsw-alias-state-idle-primary)}
-.pu-list{display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;overflow:hidden;background:var(--dsw-alias-bg-layer-1)}
-.pu-row{display:grid;grid-template-columns:24px minmax(150px,1.4fr) minmax(70px,.6fr) minmax(90px,.8fr) minmax(130px,1.4fr) auto;gap:10px;align-items:center;padding:9px 12px;border-top:1px solid var(--dsw-alias-border-l1)}
-.pu-row:first-child{border-top:none}
+.pu-section-head{display:flex;align-items:baseline;gap:8px;margin:0}
+.pu-section-title{font-size:13px;font-weight:600;letter-spacing:.01em}
+.pu-count{font-size:11.5px;font-weight:400;color:var(--dsw-alias-label-secondary);
+  background:var(--dsw-alias-bg-layer-2);border-radius:999px;padding:0 7px;line-height:18px}
+.pu-list{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;overflow:hidden;
+  background:var(--dsw-alias-bg-layer-1)}
+.pu-head-row,.pu-row{display:grid;grid-template-columns:var(--pu-cols);gap:12px;align-items:center;
+  padding:8px 14px}
+.pu-head-row{background:var(--dsw-alias-bg-layer-2);border-bottom:1px solid var(--dsw-alias-border-l1);
+  padding-top:6px;padding-bottom:6px}
+.pu-head-cell{font-size:11px;font-weight:600;color:var(--dsw-alias-label-secondary);
+  letter-spacing:.03em;text-transform:none}
+.pu-head-actions{text-align:right}
+.pu-row{border-top:1px solid var(--dsw-alias-border-l1)}
+.pu-row:first-of-type{border-top:none}
 .pu-row:hover{background:var(--dsw-alias-bg-layer-2)}
-.pu-head-row{background:transparent;font-size:11px;color:var(--dsw-alias-label-secondary);font-weight:600;padding-top:7px;padding-bottom:7px}
-.pu-head-row:hover{background:transparent}
-.pu-name{display:flex;flex-direction:column;gap:2px;min-width:0}
-.pu-name-title{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.pu-name-pkg{font-size:11px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.pu-mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
-.pu-dim{color:var(--dsw-alias-label-secondary)}
-.pu-badge{display:inline-flex;align-items:center;gap:5px;border-radius:999px;padding:1px 8px;font-size:11px;line-height:18px;white-space:nowrap;border:1px solid transparent}
-.pu-badge-update{background:rgba(35,134,54,.12);color:var(--dsw-alias-state-success-primary);border-color:rgba(35,134,54,.35)}
-.pu-badge-blocked{background:rgba(191,90,0,.12);color:var(--dsw-alias-state-warn-primary);border-color:rgba(191,90,0,.35)}
-.pu-badge-error{background:rgba(190,30,30,.12);color:var(--dsw-alias-state-error-primary);border-color:rgba(190,30,30,.35)}
-.pu-badge-muted{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);border-color:var(--dsw-alias-border-l1)}
-.pu-actions{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
-.pu-note{font-size:11px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pu-cell{min-width:0}
+.pu-cell-check{display:flex;align-items:center;justify-content:center}
 .pu-check{width:15px;height:15px;accent-color:var(--dsw-alias-brand-primary);cursor:pointer;margin:0}
-.pu-modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:1000;padding:24px}
-.pu-modal{background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l1);border-radius:14px;max-width:560px;width:100%;padding:20px;display:flex;flex-direction:column;gap:14px;box-shadow:0 18px 48px rgba(0,0,0,.35)}
-.pu-modal h3{margin:0;font-size:15px;font-weight:600}
-.pu-modal p{margin:0;font-size:13px;color:var(--dsw-alias-label-secondary);line-height:1.6}
-.pu-modal-foot{display:flex;justify-content:flex-end;gap:8px}
-.pu-progress{display:flex;flex-direction:column;gap:8px;max-height:280px;overflow:auto}
-.pu-progress-item{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;border-top:1px solid var(--dsw-alias-border-l1);padding-top:7px}
-.pu-progress-item:first-child{border-top:none;padding-top:0}
-.pu-empty{padding:18px;text-align:center;color:var(--dsw-alias-label-secondary);font-size:12.5px}
+.pu-name{display:flex;flex-direction:column;gap:1px;min-width:0}
+.pu-name-title{font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pu-name-pkg{font-size:11px;color:var(--dsw-alias-label-secondary);overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.pu-num{text-align:right;font-size:12.5px;white-space:nowrap}
+.pu-mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.pu-dim{color:var(--dsw-alias-label-secondary);font-size:12px}
+.pu-err{color:var(--dsw-alias-state-error-primary)}
+.pu-note{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pu-badge{display:inline-flex;align-items:center;border-radius:5px;padding:1px 7px;
+  font-size:11px;line-height:17px;white-space:nowrap;border:1px solid transparent;font-weight:500}
+.pu-badge-update{background:rgba(35,134,54,.12);color:var(--dsw-alias-state-success-primary);border-color:rgba(35,134,54,.3)}
+.pu-badge-blocked{background:rgba(191,90,0,.12);color:var(--dsw-alias-state-warn-primary);border-color:rgba(191,90,0,.3)}
+.pu-badge-error{background:rgba(190,30,30,.12);color:var(--dsw-alias-state-error-primary);border-color:rgba(190,30,30,.3)}
+.pu-badge-muted{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);border-color:var(--dsw-alias-border-l1)}
+.pu-actions{display:flex;gap:6px;justify-content:flex-end;align-items:center;flex-wrap:nowrap}
+.pu-empty{padding:40px 16px;text-align:center;color:var(--dsw-alias-label-secondary);font-size:12.5px}
 .pu-error{color:var(--dsw-alias-state-error-primary);font-size:12px}
-@media (max-width:820px){.pu-row{grid-template-columns:24px 1fr auto;row-gap:6px}.pu-head-row{display:none}.pu-col-hide{display:none}}
-.pu-token{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-1);padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+.pu-task{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;
+  background:var(--dsw-alias-bg-layer-1);padding:12px 14px;display:flex;flex-direction:column;gap:9px}
+.pu-task-head{display:flex;align-items:baseline;gap:10px;font-size:12.5px}
+.pu-task-head strong{font-weight:600}
+.pu-bar-track{height:3px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);overflow:hidden}
+.pu-bar-fill{height:100%;border-radius:999px;background:var(--dsw-alias-brand-primary);transition:width .25s ease}
+.pu-progress{display:flex;flex-direction:column;gap:5px}
+.pu-progress-item{display:flex;justify-content:space-between;gap:12px;font-size:12px}
+.pu-token{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;
+  background:var(--dsw-alias-bg-layer-1);padding:12px 14px;display:flex;flex-direction:column;gap:9px}
 .pu-token-head{display:flex;align-items:baseline;gap:10px;font-size:12.5px}
 .pu-token-hint{margin:0;font-size:11.5px;line-height:1.6;color:var(--dsw-alias-label-secondary)}
 .pu-token-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .pu-token-input{flex:1 1 260px;min-width:200px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .pu-ok{color:var(--dsw-alias-state-success-primary);font-size:11.5px}
-.pu-task{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-1);padding:10px 14px;display:flex;flex-direction:column;gap:8px}
-.pu-task-head{display:flex;align-items:baseline;gap:10px;font-size:12.5px}
-.pu-bar-track{height:4px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);overflow:hidden}
-.pu-bar-fill{height:100%;border-radius:999px;background:var(--dsw-alias-brand-primary);transition:width .25s ease}
+.pu-modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.42);display:flex;align-items:center;
+  justify-content:center;z-index:1000;padding:24px}
+.pu-modal{background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);
+  border:1px solid var(--dsw-alias-border-l1);border-radius:12px;max-width:520px;width:100%;
+  padding:20px;display:flex;flex-direction:column;gap:14px;box-shadow:0 18px 48px rgba(0,0,0,.32)}
+.pu-modal h3{margin:0;font-size:14px;font-weight:600}
+.pu-modal p{margin:0;font-size:12.5px;color:var(--dsw-alias-label-secondary);line-height:1.65}
+.pu-modal-foot{display:flex;justify-content:flex-end;gap:8px}
+@media (max-width:900px){
+  .pu-root{--pu-cols:24px minmax(140px,1fr) minmax(70px,.6fr) minmax(70px,.6fr) minmax(140px,auto)}
+  .pu-col-hide,.pu-head-row .pu-col-hide{display:none}
+}
 `
 
     //#endregion
@@ -695,8 +724,27 @@ window.__ModuleLoader__.load({
       return h(
         'section',
         { className: 'pu-section' },
-        h('div', { className: 'pu-section-head' }, props.title, h('span', { className: 'pu-count' }, String(props.entries.length))),
-        h('div', { className: 'pu-list' }, props.entries.map(props.render)),
+        h(
+          'h3',
+          { className: 'pu-section-head' },
+          h('span', { className: 'pu-section-title' }, props.title),
+          h('span', { className: 'pu-count' }, String(props.entries.length)),
+        ),
+        h(
+          'div',
+          { className: 'pu-list', role: 'table', 'aria-label': props.title },
+          h(
+            'div',
+            { className: 'pu-head-row', role: 'row' },
+            h('span', { className: 'pu-head-cell', 'aria-hidden': 'true' }),
+            h('span', { className: 'pu-head-cell', role: 'columnheader' }, props.columns.name),
+            h('span', { className: 'pu-head-cell pu-num', role: 'columnheader' }, props.columns.version),
+            h('span', { className: 'pu-head-cell pu-num', role: 'columnheader' }, props.columns.latest),
+            h('span', { className: 'pu-head-cell pu-col-hide', role: 'columnheader' }, props.columns.dsh),
+            h('span', { className: 'pu-head-cell pu-head-actions', role: 'columnheader' }, props.columns.actions),
+          ),
+          props.entries.map(props.render),
+        ),
       )
     }
 
@@ -893,55 +941,65 @@ window.__ModuleLoader__.load({
         return `${names[0]} ${unmet[names[0]]}`
       }
 
+      const columns = {
+        name: t('colName'),
+        version: t('colVersion'),
+        latest: t('colLatest'),
+        dsh: t('colDsh'),
+        actions: t('colActions'),
+      }
+
+      /** One titled table of rows. */
+      const section = (title, entries) => h(Section, { key: title, title, entries, columns, render: row })
+
       const row = (entry) => {
         const selectable = entry.status === 'update' || entry.status === 'incompatible' || entry.status === 'incompatible-update'
         const checked = state.selected[entry.id] !== undefined
+        const exempted = entry.exempted === true
+        const unmet = entry.dsh?.ok === false
         return h(
           'div',
-          { className: 'pu-row', key: entry.id },
-          selectable
-            ? h('input', {
-                type: 'checkbox',
-                className: 'pu-check',
-                checked,
-                disabled: busy,
-                'aria-label': `${t('colName')}: ${entry.title}`,
-                onChange: () => toggle(entry.id),
-              })
-            : h('span', { 'aria-hidden': 'true' }),
-          h(
-            'div',
-            { className: 'pu-name' },
-            h('span', { className: 'pu-name-title', title: entry.title }, entry.title),
-            h('span', { className: 'pu-name-pkg pu-mono', title: entry.spec ?? entry.name }, entry.name),
-          ),
-          h('span', { className: 'pu-mono' }, entry.version ?? '—'),
-          h('span', { className: 'pu-monout pu-mono' }, latestText(entry)),
+          { className: 'pu-row', key: entry.id, role: 'row' },
           h(
             'span',
-            { className: 'pu-col-hide' },
-            entry.dsh?.ok === false
-              ? h(Badge, { tone: 'blocked' }, requirementText(entry))
-              : entry.exempted === true
-                ? h(Badge, { tone: 'muted' }, t('exempted'))
-                : h('span', { className: 'pu-dim' }, requirementText(entry)),
+            { className: 'pu-cell pu-cell-check', role: 'cell' },
+            selectable
+              ? h('input', {
+                  type: 'checkbox',
+                  className: 'pu-check',
+                  checked,
+                  disabled: busy,
+                  'aria-label': `${t('colName')}: ${entry.title}`,
+                  onChange: () => toggle(entry.id),
+                })
+              : null,
           ),
           h(
-            'div',
-            { className: 'pu-actions' },
-            entry.status === 'update'
-              ? h('button', { type: 'button', className: 'pu-btn pu-btn-primary', disabled: busy, onClick: () => requestApply(entry.id, entry) }, `${t('updateTo:one')} ${latestText(entry)}`)
+            'span',
+            { className: 'pu-cell pu-name', role: 'cell' },
+            h('span', { className: 'pu-name-title', title: entry.title }, entry.title),
+            h('span', { className: 'pu-name-pkg', title: entry.spec ?? entry.name }, entry.name),
+          ),
+          h('span', { className: 'pu-cell pu-num pu-mono', role: 'cell' }, entry.version ?? '—'),
+          h('span', { className: 'pu-cell pu-num pu-mono', role: 'cell' }, latestText(entry)),
+          h(
+            'span',
+            { className: 'pu-cell pu-col-hide', role: 'cell' },
+            unmet ? h(Badge, { tone: 'blocked' }, t('blocked')) : exempted ? h(Badge, { tone: 'muted' }, t('exempted')) : h('span', { className: 'pu-dim' }, requirementText(entry)),
+          ),
+          h(
+            'span',
+            { className: 'pu-cell pu-actions', role: 'cell' },
+            entry.status === 'update' || entry.status === 'incompatible-update'
+              ? h('button', { type: 'button', className: 'pu-btn pu-btn-primary pu-btn-sm', disabled: busy, onClick: () => requestApply(entry.id, entry) }, `${t('updateTo:one')} ${latestText(entry)}`)
               : null,
-            entry.status === 'incompatible-update'
-              ? h('button', { type: 'button', className: 'pu-btn pu-btn-primary', disabled: busy, onClick: () => requestApply(entry.id, entry) }, `${t('updateTo:one')} ${latestText(entry)}`)
-              : null,
-            entry.status === 'incompatible' || entry.status === 'incompatible-update'
-              ? h('button', { type: 'button', className: 'pu-btn', disabled: busy, onClick: () => requestApply(entry.id, entry) }, t('accept'))
-              : null,
-            entry.exempted === true
-              ? h('button', { type: 'button', className: 'pu-btn', disabled: busy, onClick: () => void undoExemption(entry) }, t('undoExemption'))
-              : null,
+            unmet ? h('button', { type: 'button', className: 'pu-btn pu-btn-sm', disabled: busy, onClick: () => requestApply(entry.id, entry) }, t('accept')) : null,
+            exempted ? h('button', { type: 'button', className: 'pu-btn pu-btn-sm', disabled: busy, onClick: () => void undoExemption(entry) }, t('undoExemption')) : null,
             entry.status === 'builtin' ? h('span', { className: 'pu-dim pu-note' }, t('builtinNote')) : null,
+            entry.status === 'current' ? h('span', { className: 'pu-dim pu-note' }, t('upToDate')) : null,
+            entry.status === 'local' ? h('span', { className: 'pu-dim pu-note' }, t('local')) : null,
+            entry.status === 'unknown' ? h('span', { className: 'pu-dim pu-note' }, t('unknown')) : null,
+            entry.status === 'error' ? h('span', { className: 'pu-err pu-note' }, entry.probe?.note ?? t('errorNote')) : null,
           ),
         )
       }
@@ -1019,7 +1077,7 @@ window.__ModuleLoader__.load({
                 'div',
                 { className: 'pu-token-row' },
                 h('input', {
-                  className: 'pu-search pu-token-input',
+                  className: 'pu-filter pu-token-input',
                   type: 'password',
                   autoComplete: 'off',
                   placeholder: t('tokenPlaceholder'),
@@ -1035,20 +1093,20 @@ window.__ModuleLoader__.load({
 
       const header = h(
         'div',
-        { className: 'pu-bar' },
+        { className: 'pu-toolbar' },
         h(
           'button',
           { type: 'button', className: 'pu-btn', disabled: busy || state.phase === 'checking', title: t('refreshTip'), onClick: () => void runScan() },
           state.phase === 'checking' ? t('checking') : t('refresh'),
         ),
-        h('input', { className: 'pu-search', type: 'search', placeholder: t('searchPlaceholder'), value: query, onChange: (event) => setQuery(event.target.value) }),
+        h('input', { className: 'pu-filter', type: 'search', placeholder: t('searchPlaceholder'), value: query, onChange: (event) => setQuery(event.target.value) }),
         h('button', { type: 'button', className: 'pu-btn', 'aria-expanded': token.open, onClick: toggleToken }, t('tokenOpen')),
         h('span', { className: 'pu-spacer' }),
         report === null
           ? null
           : h(
               'span',
-              { className: 'pu-summary' },
+              { className: 'pu-context' },
               `${entries.length} ${t('summary:total')} · ${groups.updates.length} ${t('summary:updates')} · ${groups.blocked.length} ${t('summary:blocked')} ${report.runtime} · ${new Date(report.scannedAt).toLocaleTimeString()}`,
             ),
         selectedIds.length === 0
@@ -1068,13 +1126,13 @@ window.__ModuleLoader__.load({
         return h(
           React.Fragment,
           null,
-          h(Section, { title: t('sectionUpdates'), entries: groups.updates, render: row }),
-          h(Section, { title: t('sectionBlocked'), entries: groups.blocked, render: row }),
-          h(Section, { title: t('sectionLocal'), entries: groups.local, render: row }),
-          h(Section, { title: t('sectionUnknown'), entries: groups.unknown, render: row }),
-          h(Section, { title: t('sectionCurrent'), entries: groups.current, render: row }),
-          h(Section, { title: t('sectionError'), entries: groups.error, render: row }),
-          h(Section, { title: t('sectionBuiltin'), entries: groups.builtin, render: row }),
+          section(t('sectionUpdates'), groups.updates),
+          section(t('sectionBlocked'), groups.blocked),
+          section(t('sectionLocal'), groups.local),
+          section(t('sectionUnknown'), groups.unknown),
+          section(t('sectionCurrent'), groups.current),
+          section(t('sectionError'), groups.error),
+          section(t('sectionBuiltin'), groups.builtin),
           state.notice === null ? null : h('div', { className: 'pu-note' }, state.notice),
         )
       }
