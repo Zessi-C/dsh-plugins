@@ -747,7 +747,7 @@
       const name = 'dsh-lan-gate';
       // Cordis 的 ctx 是代理：不声明 inject 就取不到服务（报
       // "cannot get property \"connection\" without inject"）。
-      const inject = ['connection'];
+      const inject = ['connection', 'slots', 'locale'];
 
       function apply(ctx) {
         diag.applyRan = true;
