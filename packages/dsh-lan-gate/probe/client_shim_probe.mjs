@@ -176,30 +176,30 @@ function check(name, ok, detail = '') {
   const { registrations, fireInject } = run(env)
   await new Promise((r) => setTimeout(r, 20))
   fireInject()
-  check('2a 直连时不注册退出按钮', !registrations.some((r) => r.id === 'lan-gate-signout'),
-    JSON.stringify(registrations))
+  check('2a 直连实例也注册（unverified，点击时自证）',
+    registrations.some((r) => r.id === 'lan-gate-signout'), JSON.stringify(registrations))
 }
 
-// 3) 非回环地址、探针被中间件接住（拿不到门户答案）→ 按「在门户后面」处理。
-//    这条是 Safari 场景的回归：宁可多一个可用的按钮，也不要让人找不到退出入口。
+// 3) 判据全不成立（探针 404、无标记、无页面头）→ 仍注册，但形态为 unverified
 {
-  const env = makeEnv({ hostname: '10.0.0.9', port: '8080', meResponse: undefined, meHeaders: {} })
+  const env = makeEnv({ hostname: '100.96.52.76', port: '3080', meResponse: undefined, meHeaders: {} })
   const { registrations, fireInject } = run(env)
-  await new Promise((r) => setTimeout(r, 20))
+  await new Promise((r) => setTimeout(r, 30))
   fireInject()
   await new Promise((r) => setTimeout(r, 20))
-  check('3 非回环 + 探针无答案 → 注册（安全侧）', registrations.some((r) => r.id === 'lan-gate-signout'),
-    JSON.stringify(registrations))
+  const reg = registrations.find((r) => r.id === 'lan-gate-signout')
+  check('3 判据不成立也注册（unverified）', !!reg, JSON.stringify(registrations))
 }
 
-// 4) 回环 + 探针 404（没有门户路由）→ 明确不注册
+// 4) 回环直连实例：同样注册，点一下时会先自证，不会把页面带飞
 {
   const env = makeEnv({ hostname: '127.0.0.1', port: '43002', meResponse: undefined, meHeaders: {} })
   const { registrations, fireInject } = run(env)
-  await new Promise((r) => setTimeout(r, 20))
+  await new Promise((r) => setTimeout(r, 30))
   fireInject()
   await new Promise((r) => setTimeout(r, 20))
-  check('4 回环 + 404 → 不注册', !registrations.some((r) => r.id === 'lan-gate-signout'))
+  check('4 回环直连也注册（unverified，点击时自证）',
+    registrations.some((r) => r.id === 'lan-gate-signout'))
 }
 
 // 5) 英文界面
@@ -246,7 +246,8 @@ function check(name, ok, detail = '') {
   const { registrations, fireInject } = run(env)
   await new Promise((r) => setTimeout(r, 20))
   fireInject()
-  check('5c Host 与 origin 一致 → 不注册', !registrations.some((r) => r.id === 'lan-gate-signout'))
+  check('5c Host 与 origin 一致 → 仍注册（unverified）',
+    registrations.some((r) => r.id === 'lan-gate-signout'))
 }
 
 // 5f) 探针被「吃掉」（非 2xx、不是门户 JSON）≠ 不在门户后面：按钮照样出现
@@ -277,7 +278,8 @@ function check(name, ok, detail = '') {
   await new Promise((r) => setTimeout(r, 30))
   fireInject()
   await new Promise((r) => setTimeout(r, 20))
-  check('5g 回环直连实例 → 不注册', !registrations.some((r) => r.id === 'lan-gate-signout'))
+  check('5g 回环直连实例 → 仍注册（unverified）',
+    registrations.some((r) => r.id === 'lan-gate-signout'))
 }
 
 // 5h) 门户自己的回环入口（127.0.0.1:3080 经门户）→ 应注册
@@ -378,6 +380,48 @@ function check(name, ok, detail = '') {
   for (const [input, want, label] of cases) {
     check('8 ' + label, decide(input) === want, JSON.stringify(input))
   }
+}
+
+// 9) unverified 形态：点一下先自证，确认是门户才跳转；否则明确提示
+{
+  const env = makeEnv({
+    hostname: '100.96.52.76', port: '3080',
+    meResponse: { user: 'zeiss' },
+    meHeaders: { 'X-Dsh-Portal-Host': '127.0.0.1:42001' },
+  })
+  const alerts = []
+  env.sandbox.alert = (msg) => alerts.push(msg)
+  const { registrations, fireInject, mod } = run(env)
+  await new Promise((r) => setTimeout(r, 30))
+  fireInject()
+  await new Promise((r) => setTimeout(r, 20))
+  const reg = registrations.find((r) => r.id === 'lan-gate-signout')
+  let el = reg && reg.component({ wide: true, unverified: true })
+  if (el && typeof el.type === 'function') el = el.type({ ...el.props, __expand: true })
+  el.props.onClick({ preventDefault() {}, stopPropagation() {} })
+  await new Promise((r) => setTimeout(r, 30))
+  check('9a 未验证形态点击 → 自证是门户后跳转',
+    env.navigations.length === 1 && /^\/__portal\/logout\?next=login/.test(env.navigations[0]),
+    JSON.stringify(env.navigations))
+  check('9b 自证通过后写下了标记', env.sandbox.localStorage.getItem('dsh-lan-gate.portal') === '1')
+}
+
+// 10) 直连实例上点 unverified 按钮 → 不跳转，给提示
+{
+  const env = makeEnv({ hostname: '127.0.0.1', port: '43002', meResponse: undefined })
+  const alerts = []
+  env.sandbox.alert = (msg) => alerts.push(msg)
+  const { registrations, fireInject } = run(env)
+  await new Promise((r) => setTimeout(r, 30))
+  fireInject()
+  await new Promise((r) => setTimeout(r, 20))
+  const reg = registrations.find((r) => r.id === 'lan-gate-signout')
+  let el = reg && reg.component({ wide: true, unverified: true })
+  if (el && typeof el.type === 'function') el = el.type({ ...el.props, __expand: true })
+  el.props.onClick({ preventDefault() {}, stopPropagation() {} })
+  await new Promise((r) => setTimeout(r, 30))
+  check('10a 直连实例点击 → 不跳转', env.navigations.length === 0, JSON.stringify(env.navigations))
+  check('10b 直连实例点击 → 给出明确提示', alerts.length === 1, JSON.stringify(alerts))
 }
 
 const failed = results.filter((r) => !r.ok)

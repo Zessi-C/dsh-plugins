@@ -303,6 +303,7 @@
           signOutAria: '退出登录并切换账号',
           signingOut: '正在退出…',
           failed: '退出失败，请重试',
+          notPortal: '当前页面不是通过门户打开的，这里没有可退出的门户会话。',
         },
         en: {
           ns: 'lanGate',
@@ -310,6 +311,7 @@
           signOutAria: 'Sign out and switch account',
           signingOut: 'Signing out…',
           failed: 'Sign-out failed, please retry',
+          notPortal: 'This page was not opened through the portal, so there is no portal session to sign out.',
         },
       };
 
@@ -564,22 +566,49 @@
       }
 
       function SignOutButton(props) {
-        if (props.__expand) return renderSignOut(props.t, 'idle', props.wide !== false);
+        if (props.__expand) return renderSignOut(props.t, 'idle', props.wide !== false, props.unverified);
         return h(SignOutInner, props);
       }
 
       /** 渲染按钮本体；拆出来是因为下面要提前返回，而 hooks 不能写在条件分支之后。 */
       function SignOutInner(props) {
         const [phase, setPhase] = React.useState('idle');
-        return renderSignOut(props.t, phase, props.wide !== false);
+        return renderSignOut(props.t, phase, props.wide !== false, props.unverified);
       }
 
-      function renderSignOut(t, phase, wide) {
+      /**
+       * 未验证形态的退出：先问一次门户「这是门户吗/我是谁」，确认是门户才跳转。
+       * 这样在任何入口（IP 直连、域名、网关后面）都能退出，而在直连实例上
+       * 点一下只会看到「这里不是门户」，不会把页面带到 404。
+       */
+      function goSignOutChecked() {
+        if (safe(function () { return storageGet(PORTAL_MARK_KEY); }) === '1') {
+          goSignOut();
+          return Promise.resolve(true);
+        }
+        return portalProbe().then(function (yes) {
+          if (!yes) return false;
+          storageSet(PORTAL_MARK_KEY, '1');
+          goSignOut();
+          return true;
+        });
+      }
+
+      function renderSignOut(t, phase, wide, unverified) {
         const onClick = function (event) {
           try { event.preventDefault(); event.stopPropagation(); } catch (_) {}
           if (phase !== 'idle') return;
           try {
-            goSignOut();
+            if (unverified !== true) { goSignOut(); return; }
+            goSignOutChecked().then(function (went) {
+              if (went) return;
+              // 不是门户：给一次明确反馈，别让人以为按钮坏了。
+              try {
+                if (globalThis.alert) {
+                  globalThis.alert(t('notPortal'));
+                }
+              } catch (_) {}
+            }, function () {});
           } catch (e) {
             warn('退出登录跳转失败：' + String(e && e.message));
           }
@@ -610,7 +639,18 @@
         h('span', { className: 'dlg-signout-label' }, label));
       }
 
-      /** 只在门户后面注册；dsh 直连（没有门户路由）时什么也不加。 */
+      /**
+       * 挂载退出按钮。
+       *
+       * 判据优先级（任一成立就正常显示）：
+       *  1. 本地标记：这个浏览器见过门户登录页（x-dsh-portal 头）；
+       *  2. 页面自检：本页响应头带 x-dsh-portal；
+       *  3. /__portal/me 探针。
+       * 三路都不成立时**仍然显示**，但改成「单击即退出、双击才确认去门户」的
+       * 保守形态：点一次先请求一次 /__portal/me，拿到门户答案再跳转 —— 这样
+       * 不管从哪条路进来（IP 直连、域名、网关后面）都能退出/换账号；
+       * 而在真正的直连实例上点一下只会得到「这里不是门户」，不会把页面带飞。
+       */
       function mountSignOut(ctx, knownPortal) {
         // 两路合一：本地标记（见过门户登录页）→ 老门户兜底探针。
         // 页面本身带 X-Dsh-Portal: 1 时，knownPortal 为 true，直接显示。
@@ -618,7 +658,6 @@
         return decide.then(function (yes) {
           diag.portal = yes;
           diag.portalSource = knownPortal === true ? 'mark' : 'probe';
-          if (!yes) { diag.logoutRegistered = 'skipped: no portal'; return; }
           const dict = safe(function () { return pickDict(ctx.locale); }) || defaultDict();
           const t = function (key) { return dict[key] || key; };
           safe(function () {
@@ -631,11 +670,13 @@
               name: 'sidebar.footer.action',
               id: 'lan-gate-signout',
               order: 50,
-            }, function (props) { return h(SignOutButton, { wide: props.wide, t: t }); });
+            }, function (props) {
+              return h(SignOutButton, { wide: props.wide, t: t, unverified: yes !== true });
+            });
           };
           if (typeof ctx.slots.inject === 'function') ctx.slots.inject('sidebar.footer.action', register);
           else register();
-          diag.logoutRegistered = true;
+          diag.logoutRegistered = yes === true ? true : 'unverified';
           // 顺手记下当前门户账号，排查「按钮点的到底是谁」时有用。
           safe(function () {
             fetch('/__portal/me', { credentials: 'same-origin', cache: 'no-store' })
