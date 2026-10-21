@@ -97,6 +97,9 @@ DEFAULT_CONFIG = {
     "health_path": "/__portal/healthz",
     "auth_path": "/__portal/auth",
     "log_file": "/var/log/dsh-portal/access.log",
+    # 客户端请求后，门户给所有页面响应加 Cache-Control: no-store（见 _handle 里的
+    # no_cache）。默认开：没有它，「退出登录 → 后退」会恢复一份还开着的 dsh 页面。
+    "client_no_cache": True,
     "max_failed_logins": 5,
     "failed_login_window": 600,
     "lockout_seconds": 600,
@@ -289,6 +292,32 @@ def backend_port(uid, cfg):
 
 
 DSH_COOKIE_PREFIX = "dsh-auth-"
+
+
+def add_no_store(head, body_seen=0):
+    """给上游响应加 Cache-Control: no-store（把会压制它的旧头一起去掉）。
+
+    头部字节变了，Content-Length 就必须跟着重算。上游 body 不在这里：
+    read_head 已经把头部和「顺带读到的 body 首段」拆开了，所以长度 =
+    body_seen + 头部之后剩下的字节。调用方要按「本函数返回头部 + 那段 body」
+    的组合去发，才不会把长度算成 0。
+    """
+    try:
+        text = head.decode("latin1")
+    except UnicodeDecodeError:      # pragma: no cover - 头部必然是 latin1 可解码
+        return head
+    head_only, sep, body = text.partition("\r\n\r\n")
+    lines = head_only.split("\r\n")
+    out = [lines[0]]
+    for line in lines[1:]:
+        low = line.lower()
+        if low.startswith(("cache-control:", "pragma:", "expires:", "content-length:")):
+            continue
+        out.append(line)
+    out.append("cache-control: no-store")
+    out.append("pragma: no-cache")
+    out.append(f"content-length: {body_seen + len(body.encode('latin1'))}")
+    return ("\r\n".join(out) + sep + body).encode("latin1")
 
 
 def expire_cookie(header):
@@ -952,6 +981,16 @@ class Portal:
         if cfg.get("public_authority"):
             public_authority = cfg["public_authority"]
 
+        # 客户端自己要求「别缓存我这页」。dsh 的浏览器半包会在每次页面加载时打这个
+        # 标记并记住它（localStorage）：之后**所有**页面响应都带 Cache-Control:
+        # no-store。为什么要这么大的动作：点「退出登录」后按浏览器后退，撞到的
+        # 是 bfcache 里那份 dsh 页面 —— 它的 SPA 会照常渲染，看起来像没退出去，
+        # 而那段页面里的脚本根本不会重跑，谁也拦不住。只要那份页面从一开始就不进
+        # bfcache，后退就只能是真实的网络请求，门户就会把未登录的人送回登录页。
+        # 同一个浏览器里打过标记之后，登录页自身也带 no-store，避免旧登录页被恢复。
+        no_cache = cfg.get("client_no_cache") and header_first(
+            headers, "x-dsh-portal-no-cache", "") == "1"
+
         # —— 门户自身端点 ——
         if path == cfg["health_path"]:
             body = json.dumps({"ok": True, "instances": len(self.last_seen)}).encode()
@@ -1106,7 +1145,8 @@ class Portal:
 
         self.last_seen[username] = time.time()
         await self._proxy(reader, writer, method, target, version, headers,
-                          leftover, port, username, public_authority)
+                          leftover, port, username, public_authority,
+                          no_cache=no_cache)
 
     async def _serve_login(self, writer, error=None, notice=None):
         # notice/error 是门户自己的固定文案，但 error 也可能带账号相关的说明 ——
@@ -1115,10 +1155,13 @@ class Portal:
             login_path=self.cfg["login_path"],
             notice=f'<p class="note">{html.escape(notice)}</p>' if notice else "",
             error=f'<p class="err">{html.escape(error)}</p>' if error else "").encode()
+        # X-Dsh-Portal：浏览器半包靠它认出「我是从门户进来的」—— 不需要 /api 探针，
+        # 也不会把不存在的后端路由 404 记进门户日志。
         writer.write(response(200, "OK", [
             ("Content-Type", "text/html; charset=utf-8"),
             ("Content-Length", str(len(body))),
-            ("Cache-Control", "no-store"), ("Connection", "close")], body))
+            ("Cache-Control", "no-store"), ("X-Dsh-Portal", "1"),
+            ("Connection", "close")], body))
         await writer.drain()
 
     async def _read_body(self, reader, headers, leftover, limit=65536):
@@ -1209,7 +1252,7 @@ class Portal:
         await writer.drain()
 
     async def _proxy(self, reader, writer, method, target, version, headers,
-                     leftover, port, username, public_authority):
+                     leftover, port, username, public_authority, no_cache=False):
         try:
             up_r, up_w = await asyncio.wait_for(
                 asyncio.open_connection("127.0.0.1", port), timeout=10)
@@ -1283,6 +1326,11 @@ class Portal:
                     return
 
             rhead = self.rewrite_response_head(rhead, port, public_authority)
+            if no_cache and not is_upgrade:
+                # 只动普通 HTTP 响应：WebSocket 升级之后两边是全双工字节流，
+                # 给 101 加头、重算长度都会把连接弄坏。
+                # rleft 是 read_head 已经带出来的 body 首段，长度要一起算进去。
+                rhead = add_no_store(rhead, body_seen=len(rleft))
             writer.write(rhead)
             await writer.drain()
             if rleft:

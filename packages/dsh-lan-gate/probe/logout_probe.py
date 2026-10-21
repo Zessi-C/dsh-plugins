@@ -62,12 +62,14 @@ def read_response(raw):
     return status, headers, body
 
 
-async def request(port, method, target, cookie=None, host="127.0.0.1:3090"):
+async def request(port, method, target, cookie=None, host="127.0.0.1:3090", extra=None):
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     req = [f"{method} {target} HTTP/1.1", f"Host: {host}",
            "Accept: text/html", "Connection: close"]
     if cookie:
         req.append(f"Cookie: {cookie}")
+    for key, value in (extra or {}).items():
+        req.append(f"{key}: {value}")
     writer.write(("\r\n".join(req) + "\r\n\r\n").encode())
     await writer.drain()
     raw = b""
@@ -175,6 +177,30 @@ async def main():
     # E. 普通打开登录页不带提示
     status, headers, body = await request(portal_port, "GET", "/__portal/login")
     check("E 普通登录页没有退出提示", "已经退出登录" not in body.decode("utf-8"), "")
+
+    # G. 客户端打「别缓存我这页」标记 → 页面响应带 no-store（bfcache 兜底的地基）
+    #    1) 不带标记头：上游响应原样（不强制 no-store）；
+    #    2) 带 X-Dsh-Portal-No-Cache: 1：上游响应被加上 no-store，且内容长度仍然正确。
+    status, headers, _ = await request(portal_port, "GET", "/", cookie=login_cookie)
+    plain = dict(headers).get("cache-control")
+    check("G1 未打标记时不动上游缓存头", plain != "no-store", f"cache-control={plain}")
+
+    status, headers, body = await request(
+        portal_port, "GET", "/", cookie=browser_cookie,
+        extra={"X-Dsh-Portal-No-Cache": "1"})
+    cache = dict(headers).get("cache-control")
+    length = dict(headers).get("content-length")
+    check("G2 打了标记 → 页面响应 no-store", cache == "no-store", f"cache-control={cache}")
+    check("G3 响应体没被截断（长度与内容一致）",
+          length is not None and int(length) == len(body) and b"fake dsh" in body,
+          f"content-length={length} body={len(body)}")
+    check("G4 上游的 Set-Cookie 仍在", any(k == "set-cookie" for k, _ in headers))
+
+    # H. 登录页自己带 X-Dsh-Portal（浏览器半包靠它认出「我在门户后面」）
+    status, headers, _ = await request(portal_port, "GET", "/__portal/login")
+    check("H1 登录页响应带 X-Dsh-Portal: 1", dict(headers).get("x-dsh-portal") == "1",
+          str(dict(headers)))
+    check("H2 登录页仍然 no-store", dict(headers).get("cache-control") == "no-store")
 
     # F. 未登录访问别的路径仍被引导到登录页（没被退出分支吃掉）
     status, headers, _ = await request(portal_port, "GET", "/somewhere")

@@ -6,7 +6,7 @@ import vm from 'node:vm'
 const CLIENT = process.argv[2] || new URL("../lib/client.js", import.meta.url).pathname
 const source = fs.readFileSync(CLIENT, 'utf8')
 
-function makeEnv({ hostname, port, pageHost, meResponse, meHeaders = {}, lang = 'zh-CN' }) {
+function makeEnv({ hostname, port, pageHost, meResponse, meHeaders = {}, docHeaders = {}, lang = 'zh-CN' }) {
   const appended = []
   const head = {
     appendChild(node) { appended.push(node) },
@@ -24,6 +24,7 @@ function makeEnv({ hostname, port, pageHost, meResponse, meHeaders = {}, lang = 
     head,
     body: {},
     documentElement: { lang },
+    contentType: 'text/html',
     getElementById: (id) => appended.find((n) => n.id === id) || null,
     querySelector: () => null,
     createElement: () => style(),
@@ -38,18 +39,6 @@ function makeEnv({ hostname, port, pageHost, meResponse, meHeaders = {}, lang = 
     replace(url) { navigations.push(url) },
   }
   const calls = []
-  const fetchImpl = async (url, opts) => {
-    calls.push({ url, opts })
-    const headers = {
-      get(name) {
-        const key = String(name).toLowerCase()
-        const found = Object.keys(meHeaders).find((k) => k.toLowerCase() === key)
-        return found ? meHeaders[found] : null
-      },
-    }
-    const ok = meResponse !== undefined
-    return { ok, status: ok ? 200 : 404, headers, json: async () => meResponse }
-  }
   const captured = {}
   const sandbox = {
     console: { warn() {}, log() {}, error() {} },
@@ -59,10 +48,19 @@ function makeEnv({ hostname, port, pageHost, meResponse, meHeaders = {}, lang = 
     URL: globalThis.URL,
     location,
     document,
-    fetch: fetchImpl,
+    addEventListener() {},
     isSecureContext: false,
     crypto: globalThis.crypto,
     navigator: { language: lang, clipboard: { writeText: async () => {} } },
+    localStorage: (() => {
+      const map = new Map()
+      return {
+        getItem: (k) => (map.has(k) ? map.get(k) : null),
+        setItem: (k, v) => map.set(k, String(v)),
+        removeItem: (k) => map.delete(k),
+      }
+    })(),
+    addEventListener() {},
     __ModuleLoader__: {
       load(entry) {
         captured.entry = entry
@@ -82,6 +80,26 @@ function makeEnv({ hostname, port, pageHost, meResponse, meHeaders = {}, lang = 
   }
   sandbox.globalThis = sandbox
   sandbox.window = sandbox
+  // 文档响应按 docHeaders 造；/__portal/me 按 meHeaders 造。
+  const headersFor = (doc) => ({
+    get(name) {
+      const key = String(name).toLowerCase()
+      const table = doc ? docHeaders : meHeaders
+      const found = Object.keys(table).find((k) => k.toLowerCase() === key)
+      return found ? table[found] : null
+    },
+  })
+  sandbox.fetch = async (url, opts) => {
+    calls.push({ url, opts: opts || {} })
+    const doc = String(url).startsWith('http')
+    return {
+      ok: doc ? true : meResponse !== undefined,
+      status: doc ? 200 : (meResponse !== undefined ? 200 : 404),
+      headers: headersFor(doc),
+      json: async () => (doc ? null : meResponse),
+    }
+  }
+  sandbox.document.contentType = document.contentType || 'text/html'
   return { sandbox, calls, navigations, appended, captured, pageHost }
 }
 
@@ -202,6 +220,55 @@ function check(name, ok, detail = '') {
   check('5 英文界面显示 Sign out',
     !!el && (el.children || []).map((c) => (typeof c === 'string' ? c : c && c.children)).flat().filter((x) => typeof x === 'string').includes('Sign out'),
     JSON.stringify(el && el.props))
+}
+
+// 6) 门户标记：文档响应带 X-Dsh-Portal: 1 就记下标记，并且以后每次都告诉门户「别缓存」
+{
+  const env = makeEnv({
+    hostname: '100.96.52.76', port: '3080',
+    meResponse: { user: 'zeiss' },
+    meHeaders: { 'X-Dsh-Portal-Host': '127.0.0.1:42001' },
+    docHeaders: { 'X-Dsh-Portal': '1' },
+  })
+  const { registrations, fireInject } = run(env)
+  await new Promise((r) => setTimeout(r, 30))
+  fireInject()
+  const docCalls = env.calls.filter((c) => String(c.url).startsWith('http'))
+  check('6a 入口处向自己的文档地址发过一次标记请求', docCalls.length === 1, JSON.stringify(env.calls.map((c) => c.url)))
+  check('6b 首次标记请求的头是 X-Dsh-Portal-No-Cache: 0',
+    docCalls[0] && docCalls[0].opts.headers && docCalls[0].opts.headers['X-Dsh-Portal-No-Cache'] === '0',
+    JSON.stringify(docCalls[0] && docCalls[0].opts))
+  check('6c 文档响应带 X-Dsh-Portal 后写下了本地标记',
+    env.sandbox.localStorage.getItem('dsh-lan-gate.portal') === '1',
+    String(env.sandbox.localStorage.getItem('dsh-lan-gate.portal')))
+  check('6d 门户后面的按钮照常注册', registrations.some((r) => r.id === 'lan-gate-signout'))
+}
+
+// 7) 没有门户头的普通反代：不写标记，按钮靠探针判断（仍不注册，因为探针没拿到用户）
+{
+  const env = makeEnv({ hostname: '10.0.0.9', port: '8080', meResponse: undefined, meHeaders: {} })
+  const { registrations } = run(env)
+  await new Promise((r) => setTimeout(r, 20))
+  check('7 没有门户头 → 不写标记', env.sandbox.localStorage.getItem('dsh-lan-gate.portal') === null)
+  check('7b 仍不注册按钮', !registrations.some((r) => r.id === 'lan-gate-signout'))
+}
+
+// 8) 纯判定：bfcache 恢复时什么时候才把人送回登录页
+{
+  const env = makeEnv({ hostname: '100.96.52.76', port: '3080', meResponse: { user: 'zeiss' } })
+  const { mod } = run(env)
+  const decide = mod.shouldLeaveRestoredPage
+  const cases = [
+    [{ mark: '1', portal: '1', bfcache: true, meStatus: 401 }, true, '点过退出 + bfcache + 已登出'],
+    [{ mark: '1', portal: '1', bfcache: true, meStatus: 403 }, true, '点过退出 + bfcache + 403'],
+    [{ mark: '1', portal: '1', bfcache: true, meStatus: 200 }, false, '仍登录着'],
+    [{ mark: '0', portal: '0', bfcache: true, meStatus: 401 }, false, '没点过退出'],
+    [{ mark: '1', portal: '0', bfcache: true, meStatus: 401 }, false, '不在门户后面'],
+    [{ mark: '1', portal: '1', bfcache: false, meStatus: 401 }, false, '不是 bfcache 恢复'],
+  ]
+  for (const [input, want, label] of cases) {
+    check('8 ' + label, decide(input) === want, JSON.stringify(input))
+  }
 }
 
 const failed = results.filter((r) => !r.ok)

@@ -57,6 +57,7 @@
     randomUUIDSource: null,
     clipboardPatched: null,
     portal: null,
+    portalSource: null,
     portalUser: null,
     logoutRegistered: null,
     logoutClicks: 0,
@@ -356,13 +357,74 @@
         return /^zh/i.test(lang) ? DICTS.zh : DICTS.en;
       }
 
+      /* ── 门户标记 ─────────────────────────────────────────────────
+       * 需要回答「我是在门户后面吗」，有两种来源：
+       *   1. 登录页响应里的 X-Dsh-Portal 头 → 写下标记，之后每次页面加载都带上
+       *      X-Dsh-Portal-No-Cache 请求头，门户据此给所有页面响应 no-store；
+       *   2. 老门户没有那个头 → 退回 /__portal/me 探针（只在没有标记时做一次）。
+       *
+       * 为什么要 no-store：点「退出登录」后按浏览器后退，撞到的是 bfcache 里
+       * 那份 dsh 页面 —— 它的 SPA 会照常渲染，看起来像没退出去，而那份页面里的
+       * 脚本根本不会重跑。只要它从一开始就不进 bfcache，后退只能是真实网络请求，
+       * 门户就会把未登录的人送回登录页。
+       * ──────────────────────────────────────────────────────────── */
+
+      const PORTAL_MARK_KEY = 'dsh-lan-gate.portal';
+
+      function storageGet(key) {
+        return safe(function () {
+          const v = globalThis.localStorage.getItem(key);
+          return v === null ? undefined : v;
+        });
+      }
+
+      function storageSet(key, value) {
+        safe(function () { globalThis.localStorage.setItem(key, value); });
+      }
+
+      /** 当前页面是不是门户送的（响应头 X-Dsh-Portal: 1）。只认同源的响应。 */
+      function portalHeaderPresent(res) {
+        if (!res || !res.headers || typeof res.headers.get !== 'function') return false;
+        try {
+          // `|| 0`：响应头是 '0'、'false'、'' 都表示「不是门户」，这里只认 '1'。
+          return String(res.headers.get('x-dsh-portal') || '0').trim() === '1';
+        } catch (_) {
+          return false;
+        }
+      }
+
       /**
-       * 门户判定：浏览器 origin 的 host 与请求里的 Host 不一致 → 前面有反代。
-       * 门户正是把 Host 改写成 127.0.0.1:<port> 再转发的那一层。
+       * 页面入口的那次文档请求：拿到门户标记就记下来并告知门户「别缓存这些页」。
+       * 文档响应带 no-store 时浏览器不会把页面放进 bfcache，后退于是变成真实请求。
        */
-      function behindPortal() {
+      function declareCachedPage() {
+        let declared = storageGet(PORTAL_MARK_KEY) === '1';
+        const accept = String(safe(function () {
+          return globalThis.document && document.contentType;
+        }) || '');
+        if (typeof fetch !== 'function' || accept.indexOf('text/html') < 0) return declared;
+        safe(function () {
+          fetch(String(globalThis.location.href), {
+            method: 'GET',
+            credentials: 'same-origin',
+            cache: 'no-store',
+            headers: {
+              // 带着标记去问：门户据此在响应上加 no-store 与 X-Dsh-Portal。
+              'X-Dsh-Portal-No-Cache': declared ? '1' : '0',
+            },
+          }).then(function (res) {
+            if (!portalHeaderPresent(res)) return;
+            storageSet(PORTAL_MARK_KEY, '1');
+            declared = true;
+          }, function () {});
+        });
+        return declared;
+      }
+
+      /** 老门户兜底：/__portal/me 能用、且 Host 被改写，就说明前面是门户。 */
+      function portalProbe() {
         const loc = safe(() => globalThis.location);
-        if (!loc || !loc.hostname || loc.protocol === 'file:') return false;
+        if (!loc || !loc.hostname || loc.protocol === 'file:') return Promise.resolve(false);
         const pageHost = String(loc.hostname).toLowerCase();
         const pagePort = String(loc.port || (loc.protocol === 'https:' ? '443' : '80'));
         const want = (pagePort === '80' ? pageHost : pageHost + ':' + pagePort);
@@ -387,17 +449,62 @@
             signal: ctl.signal,
           }).then(function (res) {
             const viaHost = String(safe(() => res.headers.get('x-dsh-portal-host')) || '');
-            const authenticated = res.ok && res.headers.get('x-dsh-portal') !== null;
             return res.json().then(function (body) {
-              return !!body && !!body.user;
-            }, function () { return authenticated; }).then(function (hasUser) {
-              clearTimeout(timer);
-              finish(hasUser && (viaHost ? viaHost.toLowerCase().indexOf(want) < 0 : true));
+              return { ok: !!body && !!body.user, viaHost };
+            }, function () {
+              return { ok: res.ok && res.headers.get('x-dsh-portal') !== null, viaHost };
             });
+          }).then(function (verdict) {
+            clearTimeout(timer);
+            finish(verdict.ok && (verdict.viaHost ? verdict.viaHost.toLowerCase().indexOf(want) < 0 : true));
           }, function () {
             clearTimeout(timer);
             finish(false);
           }));
+        });
+      }
+
+      /**
+       * 纯判定：这一次页面恢复（bfcache）要不要把人送回登录页。
+       * mark（退出标记）/ portal（已知在门户后面）/ bfcache / meStatus 都从外面传进来，
+       * 方便离线自测把各种组合都跑一遍。
+       */
+      function shouldLeaveRestoredPage(input) {
+        const s = input || {};
+        if (s.mark !== '1') return false;       // 没点过「退出登录」，不动
+        if (s.portal !== true && s.portal !== '1') return false;   // 不在门户后面，没有登录页可回
+        if (s.bfcache !== true) return false;   // 普通加载，交给门户正常的未登录跳转
+        return s.meStatus === 401 || s.meStatus === 403;
+      }
+
+      function removePortalMark() {
+        safe(function () { globalThis.localStorage.removeItem(PORTAL_MARK_KEY); });
+      }
+
+      /**
+       * 被恢复的页面自己查一次门户会话：已登出就换到登录页。
+       * 注意整段只在「本页脚本还能跑」时才有意义（真 bfcache 恢复不会重跑脚本，
+       * 所以真正兜底的是门户的 no-store，见 declareCachedPage）。
+       */
+      function guardRestoredPage() {
+        if (typeof globalThis.addEventListener !== 'function') return;
+        globalThis.addEventListener('pageshow', function (event) {
+          if (!event || event.persisted !== true) return;
+          if (storageGet(PORTAL_MARK_KEY) !== '1') return;
+          safe(function () {
+            fetch('/__portal/me', { credentials: 'same-origin', cache: 'no-store' })
+              .then(function (res) {
+                if (shouldLeaveRestoredPage({
+                  mark: storageGet(PORTAL_MARK_KEY),
+                  portal: storageGet(PORTAL_MARK_KEY),
+                  bfcache: true,
+                  meStatus: res.status,
+                })) {
+                  removePortalMark();
+                  globalThis.location.replace('/__portal/login?logout=1');
+                }
+              }, function () {});
+          });
         });
       }
 
@@ -409,6 +516,8 @@
        */
       function goSignOut() {
         diag.logoutClicks += 1;
+        // 先留记号：万一站点以后又进了 bfcache，恢复时能据此判断「这是退出后才回来的」。
+        storageSet(PORTAL_MARK_KEY, '1');
         safe(() => { globalThis.location.assign('/__portal/logout?next=login&ts=' + Date.now()); });
       }
 
@@ -460,9 +569,11 @@
       }
 
       /** 只在门户后面注册；dsh 直连（没有门户路由）时什么也不加。 */
-      function mountSignOut(ctx) {
-        return behindPortal().then(function (yes) {
+      function mountSignOut(ctx, knownPortal) {
+        const decide = knownPortal === true ? Promise.resolve(true) : portalProbe();
+        return decide.then(function (yes) {
           diag.portal = yes;
+          diag.portalSource = knownPortal === true ? 'mark' : 'probe';
           if (!yes) { diag.logoutRegistered = 'skipped: no portal'; return; }
           const dict = safe(function () { return pickDict(ctx.locale); }) || defaultDict();
           const t = function (key) { return dict[key] || key; };
@@ -505,13 +616,16 @@
         // 门户判定与 isLoopback 改写彼此独立：即便受信判定没过（公网域名），
         // 门户自己也会种好 dsh 的 cookie，这时仍然应该有「退出登录」。
         const disposeStyle = installSignOutStyle();
+        // 首页加载时就要做：把「门户别缓存这些页」的标记打出去，并拿到已知的门户状态。
+        const knownPortal = safe(declareCachedPage) === true;
+        safe(guardRestoredPage);
         if (ctx && typeof ctx.effect === 'function') {
           ctx.effect(function () {
-            mountSignOut(ctx);
+            mountSignOut(ctx, knownPortal);
             return function () { disposeStyle(); };
           }, 'dsh-lan-gate: sign-out button');
         } else {
-          mountSignOut(ctx);
+          mountSignOut(ctx, knownPortal);
         }
         if (trustOrigin(ctx)) return;
         let tries = 0;
@@ -532,6 +646,8 @@
       exports.name = name;
       exports.inject = inject;
       exports.apply = apply;
+      // 纯判定，给 probe/client_shim_probe.mjs 离线跑组合用。
+      exports.shouldLeaveRestoredPage = shouldLeaveRestoredPage;
       return module.exports;
     }
   });
