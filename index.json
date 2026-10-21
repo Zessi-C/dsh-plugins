@@ -177,12 +177,12 @@
       },
       "versions": [
         {
-          "version": "0.3.5",
-          "publishTimestamp": 1792560297,
+          "version": "0.3.6",
+          "publishTimestamp": 1792563785,
           "source": {
             "type": "git",
             "url": "https://github.com/Zessi-C/dsh-plugins.git",
-            "commit": "89ada7ba95a53959f841cc4e017cbdddb2c6a4b8",
+            "commit": "f60422e950a6cba0cd842ab4bfdda9e2d8c8b417",
             "path": "packages/dsh-plugin-updater"
           },
           "engines": {

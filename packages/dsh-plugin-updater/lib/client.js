@@ -701,6 +701,41 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Show a render failure in place of a blank panel.
+     *
+     * A functional component cannot catch the errors of its own subtree: the
+     * exception is thrown during reconciliation, after the element that created
+     * it has already returned. Only a class component's lifecycle sees it, which
+     * is why this boundary exists beside the tab rather than a try/catch inside
+     * the registration callback.
+     */
+    class TabBoundary extends React.Component {
+      constructor(props) {
+        super(props)
+        this.state = { error: null }
+      }
+
+      static getDerivedStateFromError(error) {
+        return { error }
+      }
+
+      componentDidCatch(error, info) {
+        console.error('[dsh-plugin-updater] tab render failed', error, info?.componentStack)
+      }
+
+      render() {
+        const { error } = this.state
+        if (error === null) return h(PluginUpdaterTab, this.props)
+        return h(
+          'div',
+          { className: 'pu-root' },
+          h('div', { className: 'pu-error', style: { whiteSpace: 'pre-wrap', fontFamily: 'ui-monospace,Menlo,monospace', fontSize: 12 } },
+            `render failed: ${String(error?.message ?? error)}\n${String(error?.stack ?? '').split('\n').slice(0, 8).join('\n')}`),
+        )
+      }
+    }
+
+    /**
      * The Plugins page tab. It renders its own content into the page's tab body,
      * so every control and row is drawn here; the page keeps the header and tabs.
      */
@@ -1237,14 +1272,7 @@ window.__ModuleLoader__.load({
             label: () => t('tab'),
             locale: NS,
           },
-          (props) => {
-            try {
-              return h(PluginUpdaterTab, { ...props, t, ctx })
-            } catch (error) {
-              return h('div', { style: { padding: 16, fontFamily: 'monospace', fontSize: 13, whiteSpace: 'pre-wrap' } },
-                `render error: ${String(error?.message ?? error)}\n${String(error?.stack ?? '').split('\n').slice(0, 8).join('\n')}`)
-            }
-          },
+          (props) => h(TabBoundary, { ...props, t, ctx }),
         ),
       )
     }
