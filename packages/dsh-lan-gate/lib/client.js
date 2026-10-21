@@ -318,17 +318,17 @@
 .dlg-signout{box-sizing:border-box;display:flex;align-items:center;justify-content:center;
   width:100%;height:42px;margin:0;padding:0 10px 0 8px;gap:8px;
   border:none;border-radius:var(--dsw-radius-md,8px);background:transparent;
-  color:var(--dsw-alias-label-primary);font-family:inherit;font-size:14px;line-height:22px;
-  cursor:pointer;overflow:hidden}
+  color:var(--dsw-alias-label-primary);font-family:inherit;font-size:14px;font-weight:500;
+  line-height:22px;cursor:pointer;overflow:hidden}
 .dlg-signout:hover{background:var(--dsw-alias-interactive-bg-hover,var(--dsw-alias-bg-layer-2))}
 .dlg-signout:disabled{opacity:.6;cursor:default}
 .dlg-signout:focus-visible{outline:var(--dsw-focus-ring-width,2px) solid
   var(--dsw-alias-state-business-primary,var(--dsw-alias-brand-primary));outline-offset:-2px}
-.dlg-signout-icon{flex:none;display:inline-flex;align-items:center;justify-content:center}
+.dlg-signout-icon{flex:none;display:inline-flex;align-items:center;justify-content:center;width:18px}
 .dlg-signout-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 收起成 56px 导轨时：只有图标，尺寸和导轨里的其它控件一致 */
 .dlg-signout[data-rail="true"]{width:36px;height:36px;padding:0;border-radius:var(--dsw-radius-md,8px)}
 .dlg-signout[data-rail="true"] .dlg-signout-label{display:none}
-.dlg-signout-err{color:var(--dsw-alias-state-error-primary,#A32D2D)}
 `;
 
       function installSignOutStyle() {
@@ -553,12 +553,12 @@
           className: 'dlg-signout',
           'data-rail': wide ? undefined : 'true',
           'aria-label': phase === 'failed' ? t('failed') : t('signOutAria'),
-          title: label,
+          title: wide ? undefined : label,
           disabled: phase === 'busy',
           onClick: onClick,
         },
         h('span', { className: 'dlg-signout-icon', 'aria-hidden': 'true' },
-          h('svg', { viewBox: '0 0 24 24', width: wide ? 16 : 18, height: wide ? 16 : 18, fill: 'none' },
+          h('svg', { viewBox: '0 0 24 24', width: wide ? 18 : 20, height: wide ? 18 : 20, fill: 'none' },
             h('path', {
               d: 'M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3',
               stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round',
