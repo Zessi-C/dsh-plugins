@@ -470,6 +470,39 @@
       }
 
       /**
+       * DOM 兜底：只有门户自己的页面才会同时出现「登录 dsh」这类标题（dsh 应用
+       * 里没有登录表单，模型登录页叫别的名字）。拿到它就说明「我就是门户送的
+       * 这个页面」—— 不依赖任何探针路由、不依赖 Host 改写。
+       * 先等一次 DOMContentLoaded，再轮询最多 20 秒（bundle 可能比 body 早执行）。
+       */
+      function portalInDom() {
+        const doc = safe(function () { return globalThis.document; });
+        if (!doc || typeof doc.querySelector !== 'function') return Promise.resolve(false);
+        const inspect = function () {
+          return safe(function () {
+            const form = doc.querySelector('form.card[action*="/__portal/login"]');
+            const title = String(safe(function () { return doc.title; }) || '');
+            return !!(form || title === 'dsh 登录');
+          }) === true;
+        };
+        if (inspect()) return Promise.resolve(true);
+        return new Promise(function (resolve) {
+          let done = false;
+          const finish = function (v) { if (!done) { done = true; resolve(v); } };
+          let tries = 0;
+          const tick = function () {
+            tries += 1;
+            if (inspect()) { finish(true); return; }
+            if (tries >= 40) { finish(false); return; }
+            const t = setTimeout(tick, 500);
+            if (t && typeof t.unref === 'function') t.unref();
+          };
+          const first = setTimeout(tick, 300);
+          if (first && typeof first.unref === 'function') first.unref();
+        });
+      }
+
+      /**
        * 纯判定：这一次页面恢复（bfcache）要不要把人送回登录页。
        * mark（退出标记）/ portal（已知在门户后面）/ bfcache / meStatus 都从外面传进来，
        * 方便离线自测把各种组合都跑一遍。
@@ -575,10 +608,14 @@
 
       /** 只在门户后面注册；dsh 直连（没有门户路由）时什么也不加。 */
       function mountSignOut(ctx, knownPortal) {
-        const decide = knownPortal === true ? Promise.resolve(true) : portalProbe();
+        // 三路合一：本地标记 → DOM 铁证 → /__portal/me 探针。任何一路肯定就显示。
+        const decide = knownPortal === true
+          ? Promise.resolve(true)
+          : Promise.all([portalInDom(), portalProbe().catch(function () { return false; })])
+            .then(function (r) { return r[0] === true || r[1] === true; });
         return decide.then(function (yes) {
           diag.portal = yes;
-          diag.portalSource = knownPortal === true ? 'mark' : 'probe';
+          diag.portalSource = knownPortal === true ? 'mark' : 'probe+dom';
           if (!yes) { diag.logoutRegistered = 'skipped: no portal'; return; }
           const dict = safe(function () { return pickDict(ctx.locale); }) || defaultDict();
           const t = function (key) { return dict[key] || key; };

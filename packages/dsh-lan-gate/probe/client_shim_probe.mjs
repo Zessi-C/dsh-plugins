@@ -6,7 +6,7 @@ import vm from 'node:vm'
 const CLIENT = process.argv[2] || new URL("../lib/client.js", import.meta.url).pathname
 const source = fs.readFileSync(CLIENT, 'utf8')
 
-function makeEnv({ hostname, port, pageHost, meResponse, meHeaders = {}, docHeaders = {}, lang = 'zh-CN' }) {
+function makeEnv({ hostname, port, pageHost, meResponse, meHeaders = {}, docHeaders = {}, domPortal = false, lang = 'zh-CN' }) {
   const appended = []
   const head = {
     appendChild(node) { appended.push(node) },
@@ -100,6 +100,8 @@ function makeEnv({ hostname, port, pageHost, meResponse, meHeaders = {}, docHead
     }
   }
   sandbox.document.contentType = document.contentType || 'text/html'
+  sandbox.document.title = domPortal ? 'dsh 登录' : 'DeepSeek Harness'
+  sandbox.document.querySelector = (sel) => (domPortal && String(sel).includes('/__portal/login') ? {} : null)
   return { sandbox, calls, navigations, appended, captured, pageHost }
 }
 
@@ -220,6 +222,32 @@ function check(name, ok, detail = '') {
   check('5 英文界面显示 Sign out',
     !!el && (el.children || []).map((c) => (typeof c === 'string' ? c : c && c.children)).flat().filter((x) => typeof x === 'string').includes('Sign out'),
     JSON.stringify(el && el.props))
+}
+
+// 5d) 只有 DOM 铁证（登录页标题）、探针也 404 的情况下，按钮仍要出现
+//     —— 这是「IP + 反代 + 探针路由被吃掉」这类最坏组合的兜底。
+{
+  const env = makeEnv({
+    hostname: '100.96.52.76', port: '3080',
+    meResponse: undefined, meHeaders: {},
+    domPortal: true,
+  })
+  const { registrations, fireInject } = run(env)
+  await new Promise((r) => setTimeout(r, 900))
+  fireInject()
+  await new Promise((r) => setTimeout(r, 20))
+  check('5d DOM 铁证 → 注册按钮', registrations.some((r) => r.id === 'lan-gate-signout'),
+    JSON.stringify(registrations))
+}
+
+// 5e) 什么都没有（普通反代、探针也拿不到用户）→ 不注册
+{
+  const env = makeEnv({ hostname: '10.0.0.9', port: '8080', meResponse: undefined })
+  const { registrations, fireInject } = run(env)
+  await new Promise((r) => setTimeout(r, 900))
+  fireInject()
+  await new Promise((r) => setTimeout(r, 20))
+  check('5e 三路都无 → 不注册', !registrations.some((r) => r.id === 'lan-gate-signout'))
 }
 
 // 5b) 用公开域名访问门户：origin 是 dsh.example:7998，门户把 Host 改写成 127.0.0.1:42001
