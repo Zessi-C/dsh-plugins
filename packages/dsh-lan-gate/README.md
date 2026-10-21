@@ -99,9 +99,40 @@ docs/                       截图等证据 + deployment-inventory.md（部署�
 │  1. 把受信 hostname 上的 connection.isLoopback 改成 true        │
 │     → 设置页正常读写                                            │
 │  2. 补齐非安全上下文缺失的 crypto.randomUUID 与 navigator.clipboard │
-│  3. 诊断暴露在 window.__DSH_LAN_GATE__                          │
+│  3. 门户后面显示「退出登录」按钮（v0.14.0，见下节）                │
+│  4. 诊断暴露在 window.__DSH_LAN_GATE__                          │
 └───────────────────────────────────────────────────────────────┘
 ```
+
+### 退出登录 / 换账号（v0.14.0）
+
+门户是多用户入口，但 dsh 本身没有「我是谁」的概念，换账号只能手动敲
+`/__portal/logout`。v0.14.0 在侧边栏底部（设置行上方，`sidebar.footer.action`
+席位）加了一行「退出登录」：
+
+```
+用户点「退出登录」
+  → GET /__portal/logout?next=login&ts=…        （插件）
+  → 门户清 dsh-portal-session 与上游 dsh-auth-* cookie
+  → 303 /__portal/login?logout=1               （门户）
+  → 登录页 + 「已经退出登录。用哪个账号登录都可以。」提示
+```
+
+**只在门户后面出现**：插件先探一次 `/__portal/me`，用「浏览器 origin 的 host
+与门户改写后的 `X-Dsh-Portal-Host` 不一致」判定自己在不在门户后面，并要求该
+接口回一个已登录用户；直连实例（`127.0.0.1:43001` 或桌面端）不渲染这行按钮，
+也就不会多出对后端不存在的路由的请求。
+
+门户侧改动（`server/portal.py`）：
+
+- `/__portal/logout` 现在 **GET 与 POST 都接受**（浏览器点链接只会发 GET）；
+- 清 cookie 时**顺带清上游那张 `dsh-auth-*`**：cookie 清空后再为本次请求引导
+  一次，把上游 `Set-Cookie` 改写成 `Max-Age=0` 一起下发。否则「退出」只是丢了
+  门户会话，同一标签页里仍能带着旧的上游 cookie 继续用 —— 那就不算退出；
+- 不带 `?next=login` 的旧调用行为不变（仍 303 到 `/`），脚本与外部链接不受影响。
+
+验证：`probe/` 之外另有一份一次性的双端探针（门户登出链路 + 浏览器按钮挂载），
+见下文「验证」。
 
 ---
 
@@ -198,7 +229,15 @@ Node 内置的 undici 与 dsh 依赖的 npm undici 必须**同大版本**，否�
 ## 验证
 
 ```bash
-# 监听地址（应为 tailnet IP，无中间转发进程）
+# 门户端点
+ss -ltn | grep 3080
+curl -s -o /dev/null -w '%{http_code}\n' http://<TAILNET_IP>:3080/__portal/login   # → 200
+
+# 登出链路（浏览器里点完「退出登录」应看到登录页与提示；命令行等价形态）
+curl -sI "http://<TAILNET_IP>:3080/__portal/logout?next=login" | grep -iE '^(HTTP|location|set-cookie)'
+# → 303 / Set-Cookie: dsh-portal-session=;…Max-Age=0 / Set-Cookie: dsh-auth-…=;…Max-Age=0
+
+# 监听地址（直连实例；门户架好之后不应再把 dsh 绑到 tailnet IP）
 ss -ltn | grep 3080
 
 # 门禁日志

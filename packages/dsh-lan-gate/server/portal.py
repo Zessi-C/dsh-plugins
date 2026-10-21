@@ -114,11 +114,14 @@ LOGIN_PAGE = """<!doctype html>
    background:#534AB7;color:#fff;cursor:pointer}}
  .err{{margin:0 0 12px;padding:8px 10px;font-size:12px;color:#A32D2D;
    background:#FCEBEB;border-radius:8px}}
+ .note{{margin:0 0 12px;padding:8px 10px;font-size:12px;color:#3c5a37;
+   background:#EDF5EA;border-radius:8px}}
  .foot{{margin-top:16px;font-size:11px;color:#b4b2a9;line-height:1.5}}
 </style></head><body>
 <form class="card" method="post" action="{login_path}">
   <h1>登录 dsh</h1>
   <p class="sub">用你在这台工作站上的 Linux 账号登录。每个人有自己的工作区和数据，互不影响。</p>
+  {notice}
   {error}
   <label for="u">账号</label>
   <input id="u" name="username" autocomplete="username" autofocus>
@@ -267,6 +270,24 @@ def backend_port(uid, cfg):
 
 
 DSH_COOKIE_PREFIX = "dsh-auth-"
+
+
+def expire_cookie(header):
+    """把上游发来的 Set-Cookie 改成「立即过期」的同一张 cookie（名字/Path 不变）。
+
+    浏览器是按 (name, domain, path) 覆盖 cookie 的，所以只要把 Max-Age 置 0、
+    并去掉具体的过期时间（Expires），就能在同一位置把它删掉。没有 Max-Age 的
+    Set-Cookie 是「本次会话有效」的会话 cookie，补一条 Max-Age=0 同样能清。
+    """
+    head = header.split(";", 1)
+    name, _, value = head[0].partition("=")
+    if not name.strip():
+        return header
+    rest = head[1] if len(head) > 1 else ""
+    kept = [p.strip() for p in rest.split(";")
+            if p.strip() and not re.match(r"(?i)^(max-age|expires)\s*=", p.strip())]
+    kept.append("Max-Age=0")
+    return f"{name.strip()}={value.strip()}; " + "; ".join(kept)
 
 
 def dsh_cookie_name(port):
@@ -915,12 +936,36 @@ class Portal:
             await writer.drain()
             return
 
-        if path == cfg["logout_path"]:
+        # dsh 里的「退出登录」是一个普通链接，浏览器只会发 GET —— 不能要求先发表单 POST。
+        # 跨站风险只有「被别人悄悄登出」，而清掉 cookie 本来就等于没登录，
+        # 不构成安全损失（SameSite=Lax 下别的站点发起的顶层 GET 也带不上这个 cookie），
+        # 所以 GET 与 POST 共用一个出口。
+        if path == cfg["logout_path"] and method in ("GET", "POST"):
+            self.log("info", "logout", ip=ip, via=method.lower())
+            # 安全 + 不留痕：cookie 清空后再为本次请求引导一次，把上游那张本来只该
+            # 交给浏览器的 dsh 会话 cookie 一并清掉（Max-Age=0）。否则「退出登录」只丢
+            # 门户会话，退出后的同一页面仍带着上游 cookie 可以继续用 —— 那就不算退出。
+            # （上游 cookie 名字按后端端口派生，属于本账号自己的实例，不会碰到别人。）
+            upstream_sets = []
+            session_user = self.read_session(headers)
+            rec = lookup_user(session_user) if session_user else None
+            if rec:
+                port = backend_port(rec[0], cfg)
+                for one in (await self.bootstrap_session(session_user, port) or []):
+                    if one.split("=", 1)[0].strip():
+                        upstream_sets.append(expire_cookie(one))
+
+            # ?next=login：退出来的这次直接落在登录页并给出提示；
+            # 其余调用方（脚本、外部链接）保持原来的「跳到 /，未登录就 303 去登录页」。
+            _, qs = parse_query(target)
+            next_to = "login" == str(qs.get("next", "")).lower()
+            target_path = (cfg["login_path"] + "?logout=1") if next_to else "/"
             writer.write(response(303, "See Other", [
-                ("Location", cfg["login_path"]), ("Set-Cookie", self.clear_cookie()),
-                ("Content-Length", "0"), ("Connection", "close")]))
+                ("Location", target_path), ("Set-Cookie", self.clear_cookie()),
+                ("Content-Length", "0"), ("Cache-Control", "no-store"),
+                ("Connection", "close")]
+                + [("Set-Cookie", one) for one in upstream_sets]))
             await writer.drain()
-            self.log("info", "logout", ip=ip)
             return
 
         if path == cfg["login_path"] and method == "POST":
@@ -934,7 +979,12 @@ class Portal:
         username = self.read_session(headers)
         if not username:
             if path == cfg["login_path"]:
-                await self._serve_login(writer)
+                # ?logout=1 只用于换账号时给个提示：明确告诉用户「已经退出来了」，
+                # 否则会以为点错了、或以为上一个账号还挂着。
+                _, qs = parse_query(target)
+                logged_out = str(qs.get("logout", "")).lower() in ("1", "true", "yes")
+                await self._serve_login(
+                    writer, notice="已经退出登录。用哪个账号登录都可以。" if logged_out else None)
             else:
                 writer.write(response(303, "See Other", [
                     ("Location", cfg["login_path"]), ("Content-Length", "0"),
@@ -1033,9 +1083,10 @@ class Portal:
         await self._proxy(reader, writer, method, target, version, headers,
                           leftover, port, username, public_authority)
 
-    async def _serve_login(self, writer, error=None):
+    async def _serve_login(self, writer, error=None, notice=None):
         body = LOGIN_PAGE.format(
             login_path=self.cfg["login_path"],
+            notice=f'<p class="note">{notice}</p>' if notice else "",
             error=f'<p class="err">{error}</p>' if error else "").encode()
         writer.write(response(200, "OK", [
             ("Content-Type", "text/html; charset=utf-8"),
