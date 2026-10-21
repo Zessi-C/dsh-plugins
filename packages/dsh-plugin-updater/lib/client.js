@@ -211,7 +211,7 @@ window.__ModuleLoader__.load({
     const CSS = `
 .pu-root{
   --pu-gap:16px;
-  --pu-cols:26px minmax(180px,1.6fr) minmax(84px,.7fr) minmax(84px,.7fr) minmax(120px,1fr) minmax(160px,auto);
+  --pu-cols:26px minmax(200px,1fr) 92px 92px minmax(130px,180px) 148px;
   display:flex;flex-direction:column;gap:20px;padding:8px 0 32px;
   color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.55;
   font-variant-numeric:tabular-nums;
@@ -227,6 +227,8 @@ window.__ModuleLoader__.load({
 .pu-btn:disabled{opacity:.5;cursor:default}
 .pu-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
 .pu-btn-sm{padding:3px 9px;font-size:12px;border-radius:6px}
+.pu-actions .pu-btn{justify-content:center;white-space:nowrap}
+.pu-actions{flex-wrap:nowrap;min-width:0}
 .pu-btn-primary{background:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);color:#fff}
 .pu-btn-primary:hover:not(:disabled){filter:brightness(1.06)}
 .pu-filter{flex:0 0 190px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base);
@@ -249,7 +251,8 @@ window.__ModuleLoader__.load({
 .pu-row{border-top:1px solid var(--dsw-alias-border-l1)}
 .pu-row:first-of-type{border-top:none}
 .pu-row:hover{background:var(--dsw-alias-bg-layer-2)}
-.pu-cell{min-width:0}
+.pu-cell{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.pu-head-row>*,.pu-row>*{min-width:0}
 .pu-cell-check{display:flex;align-items:center;justify-content:center}
 .pu-check{width:15px;height:15px;accent-color:var(--dsw-alias-brand-primary);cursor:pointer;margin:0}
 .pu-name{display:flex;flex-direction:column;gap:1px;min-width:0}
@@ -294,7 +297,7 @@ window.__ModuleLoader__.load({
 .pu-modal p{margin:0;font-size:12.5px;color:var(--dsw-alias-label-secondary);line-height:1.65}
 .pu-modal-foot{display:flex;justify-content:flex-end;gap:8px}
 @media (max-width:900px){
-  .pu-root{--pu-cols:24px minmax(140px,1fr) minmax(70px,.6fr) minmax(70px,.6fr) minmax(140px,auto)}
+  .pu-root{--pu-cols:24px minmax(150px,1fr) 78px 78px 148px}
   .pu-col-hide,.pu-head-row .pu-col-hide{display:none}
 }
 `
