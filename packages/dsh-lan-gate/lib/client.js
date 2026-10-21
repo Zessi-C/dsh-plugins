@@ -421,6 +421,17 @@
       }
 
       /** 老门户兜底：/__portal/me 能用、且 Host 被改写，就说明前面是门户。 */
+      /**
+       * 门户旁的直连实例（如 127.0.0.1:43001 / 127.0.0.1:3080 本机另开的实例）
+       * 不该出现这个按钮：那里没有门户路由，点了也只会 404。
+       * 判定用「本机 + 回环」而不是「origin 是不是回环」—— 门户自己就监听
+       * 127.0.0.1:3080，那种访问同属回环，但确实是门户。
+       */
+      function isLoopbackHost(host) {
+        const h = String(host || '').toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
+        return h === 'localhost' || h === '::1' || /^127\./.test(h) || h === '0.0.0.0';
+      }
+
       function portalProbe() {
         const loc = safe(() => globalThis.location);
         if (!loc || !loc.hostname || loc.protocol === 'file:') return Promise.resolve(false);
@@ -437,8 +448,10 @@
           };
           const ctl = new AbortController();
           const timer = setTimeout(function () {
-            // 探针不是必需的：超时就当作「不在门户后面」，按钮不出现。
-            finish(false);
+            // 门户把非 GET 请求或者慢请求卡住也是可能的：超时按「在」处理，
+            // 并把证据留在 diag 里（宁可多一个按钮，不要让人找不到出口）。
+            diag.portalEvidence = 'timeout';
+            finish(true);
           }, PORTAL_PROBE_TIMEOUT_MS);
           if (timer && typeof timer.unref === 'function') timer.unref();
           safe(() => fetch('/__portal/me', {
@@ -448,14 +461,31 @@
             signal: ctl.signal,
           }).then(function (res) {
             const viaHost = String(safe(() => res.headers.get('x-dsh-portal-host')) || '');
+            const status = Number(res.status) || 0;
+            const isPortalJson = safe(() => res.headers.get('x-dsh-portal')) !== null;
             return res.json().then(function (body) {
-              return { ok: !!body && !!body.user, viaHost };
+              const looksPortal = !!body && (typeof body === 'object')
+                && ('user' in body || 'uid' in body || 'unit' in body);
+              return { reachable: true, ok: looksPortal && !!body.user,
+                       viaHost, status, isPortalJson };
             }, function () {
-              return { ok: res.ok && res.headers.get('x-dsh-portal') !== null, viaHost };
+              // 拿不到 JSON：只有 404 是「dsh 直连、没有门户」的铁证。
+              return { reachable: false, ok: false, viaHost, status, isPortalJson };
             });
           }).then(function (verdict) {
             clearTimeout(timer);
-            if (!verdict.ok) { finish(false); return; }
+            if (verdict.reachable !== true) {
+              // 拿到响应了但没拿到答案（非 2xx、或 body 不是门户的 JSON）：
+              // dsh 直连实例上 /__portal/me 是 404 → 明确「不在门户后面」。
+              // 2xx 却不是门户的 JSON（被别的中间件接住）→ 当作「在」更安全。
+              diag.portalEvidence = 'status:' + verdict.status;
+              finish(verdict.status !== 404);
+              return;
+            }
+            diag.portalEvidence = 'me:' + (verdict.ok ? 'user' : 'anon');
+            // 回环设备上的直连实例：没有任何反代特征 → 不是门户。
+            const host = String(safe(function () { return globalThis.location.hostname; }) || '');
+            if (!verdict.viaHost && isLoopbackHost(host)) { finish(false); return; }
             // 用公开域名访问时，Host 也被改写成后端回环端口，和页面 origin 的域名
             // 天然对不上 —— 这里只要求「有 X-Dsh-Portal-Host 就说明被反代过」，
             // 但「Host 等于页面 origin」说明前面根本没有反代，不算门户。
@@ -464,41 +494,9 @@
             finish(!sameAsPage);
           }, function () {
             clearTimeout(timer);
-            finish(false);
+            diag.portalEvidence = 'network-error';
+            finish(true);
           }));
-        });
-      }
-
-      /**
-       * DOM 兜底：只有门户自己的页面才会同时出现「登录 dsh」这类标题（dsh 应用
-       * 里没有登录表单，模型登录页叫别的名字）。拿到它就说明「我就是门户送的
-       * 这个页面」—— 不依赖任何探针路由、不依赖 Host 改写。
-       * 先等一次 DOMContentLoaded，再轮询最多 20 秒（bundle 可能比 body 早执行）。
-       */
-      function portalInDom() {
-        const doc = safe(function () { return globalThis.document; });
-        if (!doc || typeof doc.querySelector !== 'function') return Promise.resolve(false);
-        const inspect = function () {
-          return safe(function () {
-            const form = doc.querySelector('form.card[action*="/__portal/login"]');
-            const title = String(safe(function () { return doc.title; }) || '');
-            return !!(form || title === 'dsh 登录');
-          }) === true;
-        };
-        if (inspect()) return Promise.resolve(true);
-        return new Promise(function (resolve) {
-          let done = false;
-          const finish = function (v) { if (!done) { done = true; resolve(v); } };
-          let tries = 0;
-          const tick = function () {
-            tries += 1;
-            if (inspect()) { finish(true); return; }
-            if (tries >= 40) { finish(false); return; }
-            const t = setTimeout(tick, 500);
-            if (t && typeof t.unref === 'function') t.unref();
-          };
-          const first = setTimeout(tick, 300);
-          if (first && typeof first.unref === 'function') first.unref();
         });
       }
 
@@ -608,14 +606,14 @@
 
       /** 只在门户后面注册；dsh 直连（没有门户路由）时什么也不加。 */
       function mountSignOut(ctx, knownPortal) {
-        // 三路合一：本地标记 → DOM 铁证 → /__portal/me 探针。任何一路肯定就显示。
-        const decide = knownPortal === true
-          ? Promise.resolve(true)
-          : Promise.all([portalInDom(), portalProbe().catch(function () { return false; })])
-            .then(function (r) { return r[0] === true || r[1] === true; });
+        // 两路合一：本地标记（见过门户登录页）→ /__portal/me 探针。
+        // 探针「没答案」（非 2xx / 格式不对 / 超时）不等于「不在门户后面」：
+        // 目标 dsh 从来没注册过 /__portal/* 路由，这个请求在门户后面会被门户自己
+        // 消化，在直连实例上则是一个 404 —— 只有「明确答了、但没有用户」才算否定。
+        const decide = knownPortal === true ? Promise.resolve(true) : portalProbe();
         return decide.then(function (yes) {
           diag.portal = yes;
-          diag.portalSource = knownPortal === true ? 'mark' : 'probe+dom';
+          diag.portalSource = knownPortal === true ? 'mark' : 'probe';
           if (!yes) { diag.logoutRegistered = 'skipped: no portal'; return; }
           const dict = safe(function () { return pickDict(ctx.locale); }) || defaultDict();
           const t = function (key) { return dict[key] || key; };

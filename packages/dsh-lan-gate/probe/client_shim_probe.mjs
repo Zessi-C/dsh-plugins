@@ -179,30 +179,26 @@ function check(name, ok, detail = '') {
     JSON.stringify(registrations))
 }
 
-// 3) 有反代但不是门户（/__portal/me 404 或被别的服务接住）→ 不注册
+// 3) 非回环地址、探针被中间件接住（拿不到门户答案）→ 按「在门户后面」处理。
+//    这条是 Safari 场景的回归：宁可多一个可用的按钮，也不要让人找不到退出入口。
 {
-  const env = makeEnv({
-    hostname: '10.0.0.9', port: '8080',
-    meResponse: undefined,
-    meHeaders: {},
-  })
+  const env = makeEnv({ hostname: '10.0.0.9', port: '8080', meResponse: undefined, meHeaders: {} })
   const { registrations, fireInject } = run(env)
   await new Promise((r) => setTimeout(r, 20))
   fireInject()
-  check('3 反代但没有门户 → 不注册', !registrations.some((r) => r.id === 'lan-gate-signout'))
+  await new Promise((r) => setTimeout(r, 20))
+  check('3 非回环 + 探针无答案 → 注册（安全侧）', registrations.some((r) => r.id === 'lan-gate-signout'),
+    JSON.stringify(registrations))
 }
 
-// 4) 门户后面但 /__portal/me 返回了空用户 → 不注册（说明还没登录/路由不对）
+// 4) 回环 + 探针 404（没有门户路由）→ 明确不注册
 {
-  const env = makeEnv({
-    hostname: '100.96.52.76', port: '3080',
-    meResponse: { user: null },
-    meHeaders: { 'X-Dsh-Portal-Host': '127.0.0.1:42001' },
-  })
+  const env = makeEnv({ hostname: '127.0.0.1', port: '43002', meResponse: undefined, meHeaders: {} })
   const { registrations, fireInject } = run(env)
   await new Promise((r) => setTimeout(r, 20))
   fireInject()
-  check('4 没拿到门户用户 → 不注册', !registrations.some((r) => r.id === 'lan-gate-signout'))
+  await new Promise((r) => setTimeout(r, 20))
+  check('4 回环 + 404 → 不注册', !registrations.some((r) => r.id === 'lan-gate-signout'))
 }
 
 // 5) 英文界面
@@ -222,32 +218,6 @@ function check(name, ok, detail = '') {
   check('5 英文界面显示 Sign out',
     !!el && (el.children || []).map((c) => (typeof c === 'string' ? c : c && c.children)).flat().filter((x) => typeof x === 'string').includes('Sign out'),
     JSON.stringify(el && el.props))
-}
-
-// 5d) 只有 DOM 铁证（登录页标题）、探针也 404 的情况下，按钮仍要出现
-//     —— 这是「IP + 反代 + 探针路由被吃掉」这类最坏组合的兜底。
-{
-  const env = makeEnv({
-    hostname: '100.96.52.76', port: '3080',
-    meResponse: undefined, meHeaders: {},
-    domPortal: true,
-  })
-  const { registrations, fireInject } = run(env)
-  await new Promise((r) => setTimeout(r, 900))
-  fireInject()
-  await new Promise((r) => setTimeout(r, 20))
-  check('5d DOM 铁证 → 注册按钮', registrations.some((r) => r.id === 'lan-gate-signout'),
-    JSON.stringify(registrations))
-}
-
-// 5e) 什么都没有（普通反代、探针也拿不到用户）→ 不注册
-{
-  const env = makeEnv({ hostname: '10.0.0.9', port: '8080', meResponse: undefined })
-  const { registrations, fireInject } = run(env)
-  await new Promise((r) => setTimeout(r, 900))
-  fireInject()
-  await new Promise((r) => setTimeout(r, 20))
-  check('5e 三路都无 → 不注册', !registrations.some((r) => r.id === 'lan-gate-signout'))
 }
 
 // 5b) 用公开域名访问门户：origin 是 dsh.example:7998，门户把 Host 改写成 127.0.0.1:42001
@@ -276,6 +246,51 @@ function check(name, ok, detail = '') {
   await new Promise((r) => setTimeout(r, 20))
   fireInject()
   check('5c Host 与 origin 一致 → 不注册', !registrations.some((r) => r.id === 'lan-gate-signout'))
+}
+
+// 5f) 探针被「吃掉」（非 2xx、不是门户 JSON）≠ 不在门户后面：按钮照样出现
+{
+  const env = makeEnv({ hostname: '100.96.52.76', port: '3080', meResponse: undefined })
+  env.sandbox.fetch = async (url) => {
+    env.calls.push({ url, opts: {} })
+    if (String(url).startsWith('http')) return { ok: true, status: 200, headers: { get: () => null }, json: async () => null }
+    return { ok: false, status: 502, headers: { get: () => null }, json: async () => { throw new Error('not json') } }
+  }
+  const { registrations, fireInject } = run(env)
+  await new Promise((r) => setTimeout(r, 30))
+  fireInject()
+  await new Promise((r) => setTimeout(r, 20))
+  check('5f 探针答非所问（502）→ 仍按「在门户后面」注册',
+    registrations.some((r) => r.id === 'lan-gate-signout'), JSON.stringify(registrations))
+}
+
+// 5g) 直连实例（回环 + 探针 404）→ 明确不注册，不留一个点了会 404 的按钮
+{
+  const env = makeEnv({ hostname: '127.0.0.1', port: '43001', meResponse: undefined })
+  env.sandbox.fetch = async (url) => {
+    env.calls.push({ url, opts: {} })
+    if (String(url).startsWith('http')) return { ok: true, status: 200, headers: { get: () => null }, json: async () => null }
+    return { ok: false, status: 404, headers: { get: () => null }, json: async () => { throw new Error('nf') } }
+  }
+  const { registrations, fireInject } = run(env)
+  await new Promise((r) => setTimeout(r, 30))
+  fireInject()
+  await new Promise((r) => setTimeout(r, 20))
+  check('5g 回环直连实例 → 不注册', !registrations.some((r) => r.id === 'lan-gate-signout'))
+}
+
+// 5h) 门户自己的回环入口（127.0.0.1:3080 经门户）→ 应注册
+{
+  const env = makeEnv({
+    hostname: '127.0.0.1', port: '3080',
+    meResponse: { user: 'zeiss' },
+    meHeaders: { 'X-Dsh-Portal-Host': '127.0.0.1:42001' },
+  })
+  const { registrations, fireInject } = run(env)
+  await new Promise((r) => setTimeout(r, 30))
+  fireInject()
+  await new Promise((r) => setTimeout(r, 20))
+  check('5h 门户的回环入口 → 注册', registrations.some((r) => r.id === 'lan-gate-signout'))
 }
 
 // 6) 门户标记：文档响应带 X-Dsh-Portal: 1 就记下标记，并且以后每次都告诉门户「别缓存」
