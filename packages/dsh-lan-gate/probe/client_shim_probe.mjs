@@ -33,10 +33,11 @@ function makeEnv({ hostname, port, pageHost, meResponse, meHeaders = {}, docHead
     addEventListener() {},
   }
   const navigations = []
+  const reloads = []
   const location = {
     hostname, port, protocol: 'http:', href: `http://${hostname}:${port}/`,
     assign(url) { navigations.push(url) },
-    replace(url) { navigations.push(url) },
+    replace(url) { (url === location.href ? reloads : navigations).push(url) },
   }
   const calls = []
   const captured = {}
@@ -103,7 +104,7 @@ function makeEnv({ hostname, port, pageHost, meResponse, meHeaders = {}, docHead
   sandbox.document.contentType = document.contentType || 'text/html'
   sandbox.document.title = domPortal ? 'dsh 登录' : 'DeepSeek Harness'
   sandbox.document.querySelector = (sel) => (domPortal && String(sel).includes('/__portal/login') ? {} : null)
-  return { sandbox, calls, navigations, appended, captured, pageHost }
+  return { sandbox, calls, navigations, reloads, appended, captured, pageHost }
 }
 
 /** 运行一份客户端半包并执行它的 apply（用最小 ctx 模拟 cordis 客户端环境）。 */
@@ -406,11 +407,15 @@ function check(name, ok, detail = '') {
   check('9b 自证通过后写下了标记', env.sandbox.localStorage.getItem('dsh-lan-gate.portal') === '1')
 }
 
-// 10) 直连实例上点 unverified 按钮 → 不跳转，给提示
+// 10) 直连实例上点 unverified 按钮 → 清掉 dsh 会话 cookie 并重新加载（真正的退出）
 {
   const env = makeEnv({ hostname: '127.0.0.1', port: '43002', meResponse: undefined })
-  const alerts = []
-  env.sandbox.alert = (msg) => alerts.push(msg)
+  const cookies = []
+  env.sandbox.document.cookie = 'dsh-auth-abc123=secret; other=1'
+  Object.defineProperty(env.sandbox.document, 'cookie', {
+    get: () => 'dsh-auth-abc123=secret; other=1',
+    set: (v) => cookies.push(String(v)),
+  })
   const { registrations, fireInject } = run(env)
   await new Promise((r) => setTimeout(r, 30))
   fireInject()
@@ -419,9 +424,12 @@ function check(name, ok, detail = '') {
   let el = reg && reg.component({ wide: true, unverified: true })
   if (el && typeof el.type === 'function') el = el.type({ ...el.props, __expand: true })
   el.props.onClick({ preventDefault() {}, stopPropagation() {} })
-  await new Promise((r) => setTimeout(r, 30))
-  check('10a 直连实例点击 → 不跳转', env.navigations.length === 0, JSON.stringify(env.navigations))
-  check('10b 直连实例点击 → 给出明确提示', alerts.length === 1, JSON.stringify(alerts))
+  await new Promise((r) => setTimeout(r, 60))
+  check('10a 直连实例点击 → 删掉 dsh-auth-* cookie',
+    cookies.some((c) => c.indexOf('dsh-auth-abc123=') === 0 && /expires=|Max-Age=0/.test(c)),
+    JSON.stringify(cookies))
+  check('10b 不碰非 dsh 的 cookie', !cookies.some((c) => c.indexOf('other=') === 0), JSON.stringify(cookies))
+  check('10c 清完后重新加载本页', env.reloads.length === 1, JSON.stringify(env.reloads))
 }
 
 const failed = results.filter((r) => !r.ok)

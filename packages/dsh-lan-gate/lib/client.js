@@ -303,7 +303,6 @@
           signOutAria: '退出登录并切换账号',
           signingOut: '正在退出…',
           failed: '退出失败，请重试',
-          notPortal: '当前页面不是通过门户打开的，这里没有可退出的门户会话。',
         },
         en: {
           ns: 'lanGate',
@@ -311,7 +310,6 @@
           signOutAria: 'Sign out and switch account',
           signingOut: 'Signing out…',
           failed: 'Sign-out failed, please retry',
-          notPortal: 'This page was not opened through the portal, so there is no portal session to sign out.',
         },
       };
 
@@ -576,6 +574,62 @@
         return renderSignOut(props.t, phase, props.wide !== false, props.unverified);
       }
 
+
+      /**
+       * 直连实例（没有门户）上的「退出登录」：清掉 dsh 自己的会话 cookie。
+       *
+       * dsh 的浏览器会话是 host-only cookie（名字以 dsh-auth- 开头，后面是
+       * authority 的哈希），脚本不能读 HttpOnly 的值，但**可以**用「同名 + 过期时间
+       * 设在过去」把它删掉 —— 删除不需要读值。清完再重新加载一次页面，dsh 就回到
+       * 「未登录、需要重新打开带 token 的地址」的状态，也就是真正的退出。
+       *
+       * 注意：没有 token 就打不开 dsh（这是 dsh 的启动鉴权模型），所以这里给的是
+       * 「结束当前浏览器里的这份会话」，而不是「换一个 Linux 账号登录」——
+       * 后者只有门户那套多用户入口才提供。
+       */
+      function clearDshSessionCookies() {
+        const doc = safe(function () { return globalThis.document; });
+        if (!doc) return 0;
+        const host = String(safe(function () { return globalThis.location.hostname; }) || '');
+        // 主域与每级父域都写一遍：cookie 可能是 host-only，也可能是 domain-wide。
+        const domains = [''];
+        const labels = host.split('.');
+        for (let i = 1; i < labels.length; i++) domains.push('.' + labels.slice(i).join('.'));
+        const raw = String(safe(function () { return doc.cookie; }) || '');
+        const seen = {};
+        raw.split(';').forEach(function (part) {
+          const name = part.split('=')[0].trim();
+          if (name) seen[name] = true;
+        });
+        const paths = ['/', '', String(safe(function () { return globalThis.location.pathname; }) || '/')];
+        let cleared = 0;
+        Object.keys(seen).forEach(function (name) {
+          if (name.indexOf('dsh-auth-') !== 0) return;
+          domains.forEach(function (domain) {
+            paths.forEach(function (path) {
+              safe(function () {
+                doc.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; path=' + (path || '/')
+                  + (domain ? '; domain=' + domain : '') + '; SameSite=Lax';
+                cleared += 1;
+              });
+            });
+          });
+        });
+        diag.dshCookiesCleared = cleared;
+        diag.dshCookieNames = Object.keys(seen).filter(function (n) { return n.indexOf('dsh-auth-') === 0; });
+        return cleared;
+      }
+
+      /** 直连实例的退出：清本地 dsh 会话 cookie 后重新加载，前端回到未登录态。 */
+      function signOutLocal() {
+        const cleared = clearDshSessionCookies();
+        const loc = safe(function () { return globalThis.location; });
+        if (!loc) return false;
+        // 用 location.replace 而不是 assign：不要给「退出后的那份页面」留一条后退记录。
+        safe(function () { loc.replace(loc.href); });
+        return cleared > 0;
+      }
+
       /**
        * 未验证形态的退出：先问一次门户「这是门户吗/我是谁」，确认是门户才跳转。
        * 这样在任何入口（IP 直连、域名、网关后面）都能退出，而在直连实例上
@@ -587,9 +641,13 @@
           return Promise.resolve(true);
         }
         return portalProbe().then(function (yes) {
-          if (!yes) return false;
-          storageSet(PORTAL_MARK_KEY, '1');
-          goSignOut();
+          if (yes) {
+            storageSet(PORTAL_MARK_KEY, '1');
+            goSignOut();
+            return true;
+          }
+          // 不是门户：这是直连实例，退出 = 结束本浏览器里的 dsh 会话。
+          signOutLocal();
           return true;
         });
       }
@@ -600,15 +658,10 @@
           if (phase !== 'idle') return;
           try {
             if (unverified !== true) { goSignOut(); return; }
-            goSignOutChecked().then(function (went) {
-              if (went) return;
-              // 不是门户：给一次明确反馈，别让人以为按钮坏了。
-              try {
-                if (globalThis.alert) {
-                  globalThis.alert(t('notPortal'));
-                }
-              } catch (_) {}
-            }, function () {});
+            goSignOutChecked().then(function () {}, function () {
+              // 兜底：链路上任何一步失败，也不能让按钮看起来没反应。
+              signOutLocal();
+            });
           } catch (e) {
             warn('退出登录跳转失败：' + String(e && e.message));
           }
