@@ -706,26 +706,401 @@ window.__ModuleLoader__.load({
      */
     function PluginUpdaterTab(props) {
       const { t, ctx } = props
-      const [probe, setProbe] = React.useState('probe: start')
-      React.useEffect(() => {
-        let alive = true
-        void (async () => {
-          const steps = []
-          try {
-            steps.push(`remote=${typeof ctx?.remote}`)
-            steps.push(`pluginManager=${typeof ctx?.remote?.pluginManager}`)
-            const bundles = await ctx.remote.pluginManager.listBundles()
-            steps.push(`listBundles ok=${bundles?.ok} n=${Array.isArray(bundles?.value) ? bundles.value.length : 'n/a'}`)
-          } catch (error) {
-            steps.push(`ERROR ${String(error?.message ?? error)}`)
-          }
-          if (alive) setProbe(steps.join(' | '))
-        })()
-        return () => { alive = false }
+      const [state, setState] = React.useState({ phase: 'idle', report: null, selected: {}, notice: null, applied: [] })
+      const [query, setQuery] = React.useState('')
+      const [pending, setPending] = React.useState(null)
+      const [token, setToken] = React.useState({ open: false, configured: false, draft: '', busy: false, notice: null })
+      const scanId = React.useRef(0)
+
+      const runScan = React.useCallback(async () => {
+        const mine = ++scanId.current
+        setState((current) => ({ ...current, phase: 'checking', notice: null }))
+        try {
+          const runtime = await hostRuntime(ctx)
+          const report = await scanProfile(ctx, runtime, () => scanId.current === mine)
+          if (report === undefined || scanId.current !== mine) return
+          setState((current) => ({ ...current, phase: 'ready', report }))
+        } catch (error) {
+          if (scanId.current !== mine) return
+          setState((current) => ({ ...current, phase: 'error', notice: String(error?.message ?? error) }))
+        }
       }, [ctx])
-      return h('div', { style: { padding: 16, fontFamily: 'monospace', fontSize: 13, lineHeight: 1.8 } },
-        h('div', null, t('tokenOpen')),
-        h('div', null, probe),
+
+      React.useEffect(() => {
+        void runScan()
+      }, [runScan])
+
+      const toggle = React.useCallback((id) => {
+        setState((current) => {
+          const selected = { ...current.selected }
+          if (selected[id] === undefined) selected[id] = { accept: false }
+          else delete selected[id]
+          return { ...current, selected }
+        })
+      }, [])
+
+      const report = state.report
+      const entries = report?.entries ?? []
+      const filtered = query.trim() === '' ? entries : entries.filter((entry) => `${entry.name} ${entry.title}`.toLowerCase().includes(query.trim().toLowerCase()))
+      const groups = {
+        updates: filtered.filter((entry) => entry.status === 'update'),
+        blocked: filtered.filter((entry) => entry.status === 'incompatible' || entry.status === 'incompatible-update'),
+        local: filtered.filter((entry) => entry.status === 'local'),
+        unknown: filtered.filter((entry) => entry.status === 'unknown'),
+        current: filtered.filter((entry) => entry.status === 'current'),
+        builtin: filtered.filter((entry) => entry.status === 'builtin'),
+        error: filtered.filter((entry) => entry.status === 'error'),
+      }
+      const selectedIds = Object.keys(state.selected)
+      const busy = taskStore.state?.running === true
+
+      /**
+       * Run the chosen items in the background, one at a time.
+       *
+       * The page stays usable: progress is published to the shared task store,
+       * each item settles independently, and a failure does not cancel the rest.
+       */
+      const startRun = React.useCallback(
+        (plan) => {
+          if (plan.length === 0) return
+          void (async () => {
+            const items = plan.map((item) => ({ name: item.entry.name, status: 'pending', detail: null }))
+            publishTask({ running: true, items: [...items], done: 0, total: plan.length })
+            for (let index = 0; index < plan.length; index += 1) {
+              const item = plan[index]
+              items[index] = { ...items[index], status: 'running' }
+              publishTask({ running: true, items: [...items], done: index, total: plan.length })
+              let outcome
+              try {
+                outcome = await moveOne(ctx, t, item.entry, item.accept)
+              } catch (error) {
+                outcome = { ok: false, message: String(error?.message ?? error) }
+              }
+              items[index] = {
+                name: item.entry.name,
+                status: outcome.ok === false ? 'failed' : 'done',
+                detail: outcome.message ?? (outcome.ok === false ? t('failed') : t('appliedNow')),
+              }
+              publishTask({ running: true, items: [...items], done: index + 1, total: plan.length })
+            }
+            publishTask({ running: false, items: [...items], done: plan.length, total: plan.length })
+            // The list is stale now; refresh it without holding the run open.
+            void runScan()
+          })()
+        },
+        [ctx, runScan, t],
+      )
+
+      const applySelected = React.useCallback(() => {
+        if (selectedIds.length === 0) {
+          setState((current) => ({ ...current, notice: t('notSelected') }))
+          return
+        }
+        const plan = selectedIds
+          .map((id) => ({ entry: entries.find((candidate) => candidate.id === id), accept: state.selected[id]?.accept === true }))
+          .filter((item) => item.entry !== undefined)
+        setState((current) => ({ ...current, selected: {}, notice: null }))
+        startRun(plan)
+      }, [entries, selectedIds, startRun, state.selected, t])
+
+      const requestApply = React.useCallback((id, entry) => {
+        if (entry === undefined) return
+        // A plugin whose declared dsh range is unmet needs an explicit choice,
+        // because accepting it can crash the application.
+        setPending({ kind: entry.dsh.ok ? 'confirm' : 'accept', id, entry })
+      }, [])
+
+      const confirmPending = React.useCallback(() => {
+        if (pending === null) return
+        const item = { entry: pending.entry, accept: pending.kind === 'accept' }
+        setPending(null)
+        setState((current) => ({ ...current, selected: {} }))
+        startRun([item])
+      }, [pending, startRun])
+
+      /** Withdraw the exact-version exemption recorded for one plugin. */
+      const undoExemption = React.useCallback(
+        async (entry) => {
+          try {
+            const answer = await ctx.remote.pluginManager.setVersionExemption(`${entry.name}@${entry.version}`, RUNTIME_VERSION, false)
+            if (answer?.ok === false) {
+              setState((current) => ({ ...current, notice: `${t('tokenFailed')}: ${answer.error?.code ?? ''}` }))
+              return
+            }
+            await runScan()
+          } catch (error) {
+            setState((current) => ({ ...current, notice: String(error?.message ?? error) }))
+          }
+        },
+        [ctx, runScan, t],
+      )
+
+      const row = (entry) => {
+        const selectable = entry.status === 'update' || entry.status === 'incompatible' || entry.status === 'incompatible-update'
+        const checked = state.selected[entry.id] !== undefined
+        return h(
+          'div',
+          { className: 'pu-row', key: entry.id },
+          selectable
+            ? h('input', {
+                type: 'checkbox',
+                className: 'pu-check',
+                checked,
+                disabled: busy,
+                'aria-label': `${t('colName')}: ${entry.title}`,
+                onChange: () => toggle(entry.id),
+              })
+            : h('span', { 'aria-hidden': 'true' }),
+          h(
+            'div',
+            { className: 'pu-name' },
+            h('span', { className: 'pu-name-title', title: entry.title }, entry.title),
+            h('span', { className: 'pu-name-pkg pu-mono', title: entry.spec ?? entry.name }, entry.name),
+          ),
+          h('span', { className: 'pu-mono' }, entry.version ?? '—'),
+          h('span', { className: 'pu-monout pu-mono' }, latestText(entry)),
+          h(
+            'span',
+            { className: 'pu-col-hide' },
+            entry.dsh?.ok === false
+              ? h(Badge, { tone: 'blocked' }, requirementText(entry))
+              : entry.exempted === true
+                ? h(Badge, { tone: 'muted' }, t('exempted'))
+                : h('span', { className: 'pu-dim' }, requirementText(entry)),
+          ),
+          h(
+            'div',
+            { className: 'pu-actions' },
+            entry.status === 'update'
+              ? h('button', { type: 'button', className: 'pu-btn pu-btn-primary', disabled: busy, onClick: () => requestApply(entry.id, entry) }, `${t('updateTo:one')} ${latestText(entry)}`)
+              : null,
+            entry.status === 'incompatible-update'
+              ? h('button', { type: 'button', className: 'pu-btn pu-btn-primary', disabled: busy, onClick: () => requestApply(entry.id, entry) }, `${t('updateTo:one')} ${latestText(entry)}`)
+              : null,
+            entry.status === 'incompatible' || entry.status === 'incompatible-update'
+              ? h('button', { type: 'button', className: 'pu-btn', disabled: busy, onClick: () => requestApply(entry.id, entry) }, t('accept'))
+              : null,
+            entry.exempted === true
+              ? h('button', { type: 'button', className: 'pu-btn', disabled: busy, onClick: () => void undoExemption(entry) }, t('undoExemption'))
+              : null,
+            entry.status === 'builtin' ? h('span', { className: 'pu-dim pu-note' }, t('builtinNote')) : null,
+          ),
+        )
+      }
+
+      /** Read whether the token is already stored, without exposing its value. */
+      const readToken = React.useCallback(async () => {
+        try {
+          const answer = await ctx.remote.credentials.describe([TOKEN_REF])
+          const info = answer?.ok === true ? answer.value?.[TOKEN_REF] : undefined
+          setToken((current) => ({ ...current, configured: info?.configured === true }))
+        } catch {
+          setToken((current) => ({ ...current, configured: false }))
+        }
+      }, [ctx])
+
+      /** Save the pasted token into the dsh credential store. */
+      const saveToken = React.useCallback(async () => {
+        const value = token.draft.trim()
+        if (value === '') return
+        setToken((current) => ({ ...current, busy: true, notice: null }))
+        try {
+          const answer = await ctx.remote.credentials.set(TOKEN_REF, value)
+          const failed = answer?.ok === false
+          setToken((current) => ({
+            ...current,
+            busy: false,
+            draft: failed ? current.draft : '',
+            configured: failed ? current.configured : true,
+            notice: failed ? `${t('tokenFailed')}: ${answer?.error?.code ?? ''}` : t('tokenSaved'),
+          }))
+        } catch (error) {
+          setToken((current) => ({ ...current, busy: false, notice: `${t('tokenFailed')}: ${String(error?.message ?? error)}` }))
+        }
+      }, [ctx, t, token.draft])
+
+      /** Remove the stored token. */
+      const clearToken = React.useCallback(async () => {
+        setToken((current) => ({ ...current, busy: true, notice: null }))
+        try {
+          const answer = await ctx.remote.credentials.unset(TOKEN_REF)
+          const failed = answer?.ok === false
+          setToken((current) => ({
+            ...current,
+            busy: false,
+            configured: failed ? current.configured : false,
+            notice: failed ? `${t('tokenFailed')}: ${answer?.error?.code ?? ''}` : t('tokenCleared'),
+          }))
+        } catch (error) {
+          setToken((current) => ({ ...current, busy: false, notice: `${t('tokenFailed')}: ${String(error?.message ?? error)}` }))
+        }
+      }, [ctx, t])
+
+      const toggleToken = React.useCallback(() => {
+        setToken((current) => {
+          const open = !current.open
+          return { ...current, open, notice: null }
+        })
+        void readToken()
+      }, [readToken])
+
+      const tokenPanel =
+        token.open === false
+          ? null
+          : h(
+              'div',
+              { className: 'pu-token' },
+              h(
+                'div',
+                { className: 'pu-token-head' },
+                h('strong', null, t('tokenTitle')),
+                h('span', { className: token.configured ? 'pu-ok' : 'pu-dim' }, token.configured ? t('tokenConfigured') : t('tokenMissing')),
+              ),
+              h('p', { className: 'pu-token-hint' }, t('tokenHint')),
+              h(
+                'div',
+                { className: 'pu-token-row' },
+                h('input', {
+                  className: 'pu-search pu-token-input',
+                  type: 'password',
+                  autoComplete: 'off',
+                  placeholder: t('tokenPlaceholder'),
+                  value: token.draft,
+                  disabled: token.busy,
+                  onChange: (event) => setToken((current) => ({ ...current, draft: event.target.value })),
+                }),
+                h('button', { type: 'button', className: 'pu-btn pu-btn-primary', disabled: token.busy || token.draft.trim() === '', onClick: () => void saveToken() }, t('tokenSave')),
+                h('button', { type: 'button', className: 'pu-btn', disabled: token.busy || !token.configured, onClick: () => void clearToken() }, t('tokenClear')),
+              ),
+              token.notice === null ? null : h('div', { className: 'pu-note' }, token.notice),
+            )
+
+      const header = h(
+        'div',
+        { className: 'pu-bar' },
+        h(
+          'button',
+          { type: 'button', className: 'pu-btn', disabled: busy || state.phase === 'checking', title: t('refreshTip'), onClick: () => void runScan() },
+          state.phase === 'checking' ? t('checking') : t('refresh'),
+        ),
+        h('input', { className: 'pu-search', type: 'search', placeholder: t('searchPlaceholder'), value: query, onChange: (event) => setQuery(event.target.value) }),
+        h('button', { type: 'button', className: 'pu-btn', 'aria-expanded': token.open, onClick: toggleToken }, t('tokenOpen')),
+        h('span', { className: 'pu-spacer' }),
+        report === null
+          ? null
+          : h(
+              'span',
+              { className: 'pu-summary' },
+              `${entries.length} ${t('summary:total')} · ${groups.updates.length} ${t('summary:updates')} · ${groups.blocked.length} ${t('summary:blocked')} ${report.runtime} · ${new Date(report.scannedAt).toLocaleTimeString()}`,
+            ),
+        selectedIds.length === 0
+          ? null
+          : h(
+              'button',
+              { type: 'button', className: 'pu-btn pu-btn-primary', disabled: busy, onClick: () => void applySelected() },
+              busy ? t('applying') : `${t('apply')} · ${selectedIds.length} ${t('selected:one')}`,
+            ),
+      )
+
+      const body = () => {
+        if (state.phase === 'checking' && report === null) return h('div', { className: 'pu-empty' }, t('checking'))
+        if (state.phase === 'error') return h('div', { className: 'pu-error' }, state.notice ?? t('noRemote'))
+        if (report === null) return null
+        if (entries.length === 0) return h('div', { className: 'pu-empty' }, t('empty'))
+        return h(
+          React.Fragment,
+          null,
+          h(Section, { title: t('sectionUpdates'), entries: groups.updates, render: row }),
+          h(Section, { title: t('sectionBlocked'), entries: groups.blocked, render: row }),
+          h(Section, { title: t('sectionLocal'), entries: groups.local, render: row }),
+          h(Section, { title: t('sectionUnknown'), entries: groups.unknown, render: row }),
+          h(Section, { title: t('sectionCurrent'), entries: groups.current, render: row }),
+          h(Section, { title: t('sectionError'), entries: groups.error, render: row }),
+          h(Section, { title: t('sectionBuiltin'), entries: groups.builtin, render: row }),
+          state.notice === null ? null : h('div', { className: 'pu-note' }, state.notice),
+        )
+      }
+
+      const modal =
+        pending === null
+          ? null
+          : h(
+              'div',
+              { className: 'pu-modal-backdrop', role: 'presentation', onClick: (event) => event.target === event.currentTarget && setPending(null) },
+              h(
+                'div',
+                { className: 'pu-modal', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'pu-modal-title' },
+                h('h3', { id: 'pu-modal-title' }, pending.kind === 'accept' ? t('acceptTitle') : `${t('updateTo:one')} ${latestText(pending.entry)}`),
+                pending.kind === 'accept'
+                  ? h('p', null, `${t('acceptBodyHead')} ${pending.entry.name}@${pending.entry.version} → dsh ${report?.runtime ?? ''}。${t('acceptBodyTail')}`)
+                  : h('p', null, pending.entry.name),
+                h(
+                  'div',
+                  { className: 'pu-modal-foot' },
+                  h('button', { type: 'button', className: 'pu-btn', onClick: () => setPending(null) }, t('cancel')),
+                  h('button', { type: 'button', className: 'pu-btn pu-btn-primary', onClick: () => void confirmPending() }, pending.kind === 'accept' ? t('acceptConfirm') : t('update')),
+                ),
+              ),
+            )
+
+      const task = useBackgroundTask()
+      const taskPanel =
+        task === null
+          ? null
+          : h(
+              'div',
+              { className: 'pu-task', role: 'status', 'aria-live': 'polite' },
+              h(
+                'div',
+                { className: 'pu-task-head' },
+                h('strong', null, task.running ? t('progressTitle') : t('progressDone')),
+                h('span', { className: 'pu-dim' }, `${task.done}/${task.total}`),
+                h('span', { className: 'pu-spacer' }),
+                task.running
+                  ? null
+                  : h('button', { type: 'button', className: 'pu-btn', onClick: () => publishTask(null) }, t('dismiss')),
+              ),
+              h(
+                'div',
+                { className: 'pu-bar-track' },
+                h('div', {
+                  className: 'pu-bar-fill',
+                  style: { width: `${task.total === 0 ? 0 : Math.round((task.done / task.total) * 100)}%` },
+                }),
+              ),
+              h(
+                'div',
+                { className: 'pu-progress' },
+                task.items.map((item) =>
+                  h(
+                    'div',
+                    { className: 'pu-progress-item', key: item.name },
+                    h('span', null, item.name),
+                    h(
+                      'span',
+                      { className: item.status === 'failed' ? 'pu-error' : 'pu-dim' },
+                      item.status === 'running'
+                        ? t('applying')
+                        : item.status === 'failed'
+                          ? item.detail ?? t('failed')
+                          : item.status === 'done'
+                            ? item.detail ?? t('applyDone')
+                            : '',
+                    ),
+                  ),
+                ),
+              ),
+            )
+
+      return h(
+        'div',
+        { className: 'pu-root' },
+        header,
+        tokenPanel,
+        body(),
+        modal,
+        taskPanel,
+        report === null || (groups.updates.length === 0 && groups.blocked.length === 0) ? null : h('div', { className: 'pu-note' }, t('reloadHint')),
       )
     }
 
@@ -862,7 +1237,14 @@ window.__ModuleLoader__.load({
             label: () => t('tab'),
             locale: NS,
           },
-          (props) => h(PluginUpdaterTab, { ...props, t, ctx }),
+          (props) => {
+            try {
+              return h(PluginUpdaterTab, { ...props, t, ctx })
+            } catch (error) {
+              return h('div', { style: { padding: 16, fontFamily: 'monospace', fontSize: 13, whiteSpace: 'pre-wrap' } },
+                `render error: ${String(error?.message ?? error)}\n${String(error?.stack ?? '').split('\n').slice(0, 8).join('\n')}`)
+            }
+          },
         ),
       )
     }
