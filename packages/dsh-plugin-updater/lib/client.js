@@ -870,6 +870,29 @@ window.__ModuleLoader__.load({
         [ctx, runScan, t],
       )
 
+      /**
+       * The version shown in the "latest" column: the release the page would
+       * install. A row with nothing newer shows its own version instead.
+       */
+      const latestText = (entry) => {
+        if (entry === undefined) return '—'
+        if (entry.kind === 'builtin') return entry.version ?? '—'
+        if (entry.status === 'local') return t('local')
+        if (entry.status === 'unknown') return t('unknown')
+        if (entry.probe?.compatibleLatest !== undefined) return entry.probe.compatibleLatest
+        if (entry.status === 'incompatible-update' && entry.probe?.blockedLatest !== undefined) return entry.probe.blockedLatest
+        if (entry.probe?.latest !== undefined) return entry.probe.latest
+        return entry.version ?? '—'
+      }
+
+      /** The dsh-requirement cell: the first unmet requirement, or none. */
+      const requirementText = (entry) => {
+        const unmet = entry?.dsh?.requirements ?? {}
+        const names = Object.keys(unmet)
+        if (names.length === 0) return t('satisfied')
+        return `${names[0]} ${unmet[names[0]]}`
+      }
+
       const row = (entry) => {
         const selectable = entry.status === 'update' || entry.status === 'incompatible' || entry.status === 'incompatible-update'
         const checked = state.selected[entry.id] !== undefined
