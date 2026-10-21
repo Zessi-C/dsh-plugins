@@ -465,7 +465,6 @@
           diag.portal = yes;
           if (!yes) { diag.logoutRegistered = 'skipped: no portal'; return; }
           const dict = safe(function () { return pickDict(ctx.locale); }) || defaultDict();
-          // 门户上的账号（拿不到就留空，按钮照常出现）。
           const t = function (key) { return dict[key] || key; };
           safe(function () {
             if (ctx.locale && typeof ctx.locale.register === 'function') {
