@@ -32,6 +32,7 @@ import argparse
 import asyncio
 import base64
 import hashlib
+import html
 import hmac
 import json
 import os
@@ -134,7 +135,21 @@ LOGIN_PAGE = """<!doctype html>
   <button type="submit">登录</button>
   <div class="foot">第一次登录会先为你准备环境，需要一小会儿。<br>
   长时间不用会自动停掉，下次登录再启动，数据不会丢。</div>
-</form></body></html>
+</form>
+<script>
+(function () {{
+  // 退出登录后浏览器「后退」会撞上 bfcache 里的 dsh 页面：它的 SPA 会照常渲染，
+  // 看着像「根本没退出去」。这里在该页被恢复时主动问一次门户「我还登录着吗」，
+  // 已登出就换到登录页。只有本页这个「登录页」不是 SPA，才把这段发出去。
+  window.addEventListener('pageshow', function (event) {{
+    if (!event.persisted) return;
+    fetch('/__portal/me', {{ credentials: 'same-origin', cache: 'no-store' }}).then(function (res) {{
+      if (res.status === 401 || res.status === 403) {{ location.replace('{login_path}?logout=1'); }}
+    }}, function () {{}});
+  }});
+}})();
+</script>
+</body></html>
 """
 
 
@@ -1094,10 +1109,12 @@ class Portal:
                           leftover, port, username, public_authority)
 
     async def _serve_login(self, writer, error=None, notice=None):
+        # notice/error 是门户自己的固定文案，但 error 也可能带账号相关的说明 ——
+        # 逐个转义，别让它有机会往登录页里塞标签。
         body = LOGIN_PAGE.format(
             login_path=self.cfg["login_path"],
-            notice=f'<p class="note">{notice}</p>' if notice else "",
-            error=f'<p class="err">{error}</p>' if error else "").encode()
+            notice=f'<p class="note">{html.escape(notice)}</p>' if notice else "",
+            error=f'<p class="err">{html.escape(error)}</p>' if error else "").encode()
         writer.write(response(200, "OK", [
             ("Content-Type", "text/html; charset=utf-8"),
             ("Content-Length", str(len(body))),

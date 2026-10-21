@@ -148,6 +148,25 @@ async def main():
     status, headers, _ = await request(portal_port, "POST", "/__portal/logout", cookie=login_cookie)
     check("C POST 入口仍可用", status == 303, f"status={status}")
 
+    # D0. 登录页里的 bfcache 兜底脚本与 probe/client-guard.js 保持一致，
+    #     否则「线上那一份」和「测过的那一份」会悄悄分叉。
+    guard_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "client-guard.js")
+    # 只比代码：文件头那几行注释是给人看的，不属于线上那一份。
+    guard = "\n".join(line for line in open(guard_path, encoding="utf-8").read().splitlines()
+                       if not line.startswith("//"))
+
+    def squash(text):
+        return re.sub(r"\s+", "", text)
+
+    status, headers, page = await request(portal_port, "GET", "/__portal/login")
+    page_text = page.decode("utf-8")
+    inline = re.search(r"<script>(.*?)</script>", page_text, re.S)
+    check("D0a 登录页内联了兜底脚本", inline is not None, page_text[-400:])
+    check("D0b 与 probe/client-guard.js 逐字一致",
+          inline is not None and squash(inline.group(1)) == squash(guard),
+          (inline.group(1)[:200] if inline else ""))
+    check("D0c 脚本里指向登录页", "/__portal/login?logout=1" in page_text)
+
     # D. 退出后的登录页提示
     status, headers, body = await request(portal_port, "GET", "/__portal/login?logout=1")
     check("D1 登录页 200", status == 200, f"status={status}")
