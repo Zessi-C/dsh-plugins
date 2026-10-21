@@ -294,13 +294,17 @@ def backend_port(uid, cfg):
 DSH_COOKIE_PREFIX = "dsh-auth-"
 
 
-def add_no_store(head, body_seen=0):
-    """给上游响应加 Cache-Control: no-store（把会压制它的旧头一起去掉）。
+def add_no_store(head, body_seen=0, portal_mark=True, no_store=True):
+    """给上游响应加 Cache-Control: no-store（可选加 X-Dsh-Portal: 1），重算长度。
 
     头部字节变了，Content-Length 就必须跟着重算。上游 body 不在这里：
     read_head 已经把头部和「顺带读到的 body 首段」拆开了，所以长度 =
     body_seen + 头部之后剩下的字节。调用方要按「本函数返回头部 + 那段 body」
     的组合去发，才不会把长度算成 0。
+
+    X-Dsh-Portal 是给浏览器半包认「我在门户后面」用的：外层网关（例如本机的
+    fn-knock）会把 /__portal/* 这类路径吃掉，客户端探针拿不到可靠答案；
+    而页面响应头是网关原样转发的，靠它判定最稳。
     """
     try:
         text = head.decode("latin1")
@@ -311,11 +315,15 @@ def add_no_store(head, body_seen=0):
     out = [lines[0]]
     for line in lines[1:]:
         low = line.lower()
-        if low.startswith(("cache-control:", "pragma:", "expires:", "content-length:")):
+        if low.startswith(("cache-control:", "pragma:", "expires:", "content-length:",
+                           "x-dsh-portal:")):
             continue
         out.append(line)
-    out.append("cache-control: no-store")
-    out.append("pragma: no-cache")
+    if no_store:
+        out.append("cache-control: no-store")
+        out.append("pragma: no-cache")
+    if portal_mark:
+        out.append("x-dsh-portal: 1")
     out.append(f"content-length: {body_seen + len(body.encode('latin1'))}")
     return ("\r\n".join(out) + sep + body).encode("latin1")
 
@@ -1329,11 +1337,14 @@ class Portal:
                     return
 
             rhead = self.rewrite_response_head(rhead, port, public_authority)
-            if no_cache and not is_upgrade:
+            if not is_upgrade:
                 # 只动普通 HTTP 响应：WebSocket 升级之后两边是全双工字节流，
                 # 给 101 加头、重算长度都会把连接弄坏。
                 # rleft 是 read_head 已经带出来的 body 首段，长度要一起算进去。
-                rhead = add_no_store(rhead, body_seen=len(rleft))
+                # X-Dsh-Portal 每次都加（浏览器半包据此认出「我在门户后面」）；
+                # no-store 受 client_no_cache 控制（默认开）。
+                rhead = add_no_store(rhead, body_seen=len(rleft), portal_mark=True,
+                                     no_store=no_cache)
             writer.write(rhead)
             await writer.drain()
             if rleft:

@@ -96,6 +96,7 @@ function makeEnv({ hostname, port, pageHost, meResponse, meHeaders = {}, docHead
       ok: doc ? true : meResponse !== undefined,
       status: doc ? 200 : (meResponse !== undefined ? 200 : 404),
       headers: headersFor(doc),
+      url: doc ? String(url) : String(url),
       json: async () => (doc ? null : meResponse),
     }
   }
@@ -291,6 +292,44 @@ function check(name, ok, detail = '') {
   fireInject()
   await new Promise((r) => setTimeout(r, 20))
   check('5h 门户的回环入口 → 注册', registrations.some((r) => r.id === 'lan-gate-signout'))
+}
+
+// 5i) 门户在页面响应头打标（外层网关吃掉了 /__portal/* 的场景）
+//     —— 探针 404/被网关接管，但本页 X-Dsh-Portal: 1 → 按钮必须出现
+{
+  const env = makeEnv({
+    hostname: '100.96.52.76', port: '3080',
+    meResponse: undefined, meHeaders: {},
+    docHeaders: { 'X-Dsh-Portal': '1' },
+  })
+  env.sandbox.fetch = async (url, opts) => {
+    env.calls.push({ url, opts: opts || {} })
+    const doc = String(url).startsWith('http')
+    return {
+      ok: true, status: 200, url: String(url),
+      headers: { get: (n) => (doc && String(n).toLowerCase() === 'x-dsh-portal' ? '1' : null) },
+      json: async () => { throw new Error('gateway html'); },
+    }
+  }
+  const { registrations, fireInject } = run(env)
+  await new Promise((r) => setTimeout(r, 30))
+  fireInject()
+  check('5i 页面头 X-Dsh-Portal → 注册（不靠 /__portal 探针）',
+    registrations.some((r) => r.id === 'lan-gate-signout'), JSON.stringify(registrations))
+}
+
+// 5j) 同一地址但没有门户头（直连）→ 不注册
+{
+  const env = makeEnv({ hostname: '100.96.52.76', port: '3080', meResponse: undefined })
+  env.sandbox.fetch = async (url, opts) => {
+    env.calls.push({ url, opts: opts || {} })
+    const doc = String(url).startsWith('http')
+    return { ok: true, status: 200, url: String(url), headers: { get: () => null },
+      json: async () => (doc ? null : {}) }
+  }
+  const { registrations } = run(env)
+  await new Promise((r) => setTimeout(r, 6000))
+  check('5j 无门户头也无探针 → 不注册', !registrations.some((r) => r.id === 'lan-gate-signout'))
 }
 
 // 6) 门户标记：文档响应带 X-Dsh-Portal: 1 就记下标记，并且以后每次都告诉门户「别缓存」

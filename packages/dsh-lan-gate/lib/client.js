@@ -400,7 +400,7 @@
        * 自定义头（曾经为此设计过 X-Dsh-Portal-No-Cache，行不通）；「页面不进
        * bfcache」已经改由门户在服务端强制（no-store），这里只负责认门户。
        */
-      function declareCachedPage() {
+      function declareCachedPage(done) {
         let declared = storageGet(PORTAL_MARK_KEY) === '1';
         const accept = String(safe(function () {
           return globalThis.document && document.contentType;
@@ -412,10 +412,16 @@
             credentials: 'same-origin',
             cache: 'no-store',
           }).then(function (res) {
-            if (!portalHeaderPresent(res)) return;
-            storageSet(PORTAL_MARK_KEY, '1');
-            declared = true;
-          }, function () {});
+            // 页面自身的响应头是权威判据：外层网关（fn-knock 之类）会把
+            // /__portal/* 吃掉，只有页面响应头能可靠带出这两个信息。
+            const isPortal = portalHeaderPresent(res);
+            const sameOriginPage = String(safe(function () { return res.url; }) || '')
+              .indexOf(String(globalThis.location.origin)) === 0;
+            if (isPortal) storageSet(PORTAL_MARK_KEY, '1');
+            if (typeof done === 'function') done(isPortal && sameOriginPage, isPortal);
+          }, function () {
+            if (typeof done === 'function') done(false, false);
+          });
         });
         return declared;
       }
@@ -606,10 +612,8 @@
 
       /** 只在门户后面注册；dsh 直连（没有门户路由）时什么也不加。 */
       function mountSignOut(ctx, knownPortal) {
-        // 两路合一：本地标记（见过门户登录页）→ /__portal/me 探针。
-        // 探针「没答案」（非 2xx / 格式不对 / 超时）不等于「不在门户后面」：
-        // 目标 dsh 从来没注册过 /__portal/* 路由，这个请求在门户后面会被门户自己
-        // 消化，在直连实例上则是一个 404 —— 只有「明确答了、但没有用户」才算否定。
+        // 两路合一：本地标记（见过门户登录页）→ 老门户兜底探针。
+        // 页面本身带 X-Dsh-Portal: 1 时，knownPortal 为 true，直接显示。
         const decide = knownPortal === true ? Promise.resolve(true) : portalProbe();
         return decide.then(function (yes) {
           diag.portal = yes;
@@ -657,15 +661,26 @@
         // 门户自己也会种好 dsh 的 cookie，这时仍然应该有「退出登录」。
         const disposeStyle = installSignOutStyle();
         // 首页加载时就要做：把「门户别缓存这些页」的标记打出去，并拿到已知的门户状态。
-        const knownPortal = safe(declareCachedPage) === true;
+        // 页面自检的回调在 self-check 拿到响应头后触发（最多等 5 秒）；超时则交给
+        // 挂载时的探针/标记兜底。selfCheckSettled 只触发一次，避免重复注册。
+        let selfCheckSettled = false;
+        const settle = function (viaHeader) {
+          if (selfCheckSettled) return;
+          selfCheckSettled = true;
+          mountSignOut(ctx, viaHeader);
+        };
+        const marked = safe(function () { return declareCachedPage(settle); }) === true;
         safe(guardRestoredPage);
+        if (marked) settle(true);
+        const fallback = setTimeout(function () { settle(false); }, PORTAL_PROBE_TIMEOUT_MS);
+        if (fallback && typeof fallback.unref === 'function') fallback.unref();
         if (ctx && typeof ctx.effect === 'function') {
           ctx.effect(function () {
-            mountSignOut(ctx, knownPortal);
-            return function () { disposeStyle(); };
+            return function () {
+              clearTimeout(fallback);
+              disposeStyle();
+            };
           }, 'dsh-lan-gate: sign-out button');
-        } else {
-          mountSignOut(ctx, knownPortal);
         }
         if (trustOrigin(ctx)) return;
         let tries = 0;

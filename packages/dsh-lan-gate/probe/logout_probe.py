@@ -190,11 +190,17 @@ async def main():
           f"content-length={d.get('content-length')} body={len(body)}")
     check("G3 上游的 Set-Cookie 仍在", any(k == "set-cookie" for k, _ in headers))
 
+    check("G2b 页面响应带 X-Dsh-Portal: 1（外层网关吃掉探针时的唯一可靠判据）",
+          d.get("x-dsh-portal") == "1", str(d.get("x-dsh-portal")))
+
     # 关闭开关后回到原样：不强制 no-store（留给需要老行为的部署）
     p.cfg["client_no_cache"] = False
     status, headers, _ = await request(portal_port, "GET", "/", cookie=browser_cookie)
-    check("G4 client_no_cache=false 时不改上游缓存头",
-          dict(headers).get("cache-control") != "no-store", str(dict(headers).get("cache-control")))
+    d4 = dict(headers)
+    check("G4 client_no_cache=false 时不强制 no-store",
+          d4.get("cache-control") != "no-store", str(d4.get("cache-control")))
+    check("G5 no-store 关掉也仍然带门户标记", d4.get("x-dsh-portal") == "1",
+          str(d4.get("x-dsh-portal")))
     p.cfg["client_no_cache"] = True
 
     # H. 登录页自己带 X-Dsh-Portal（浏览器半包靠它认出「我在门户后面」）
