@@ -60,9 +60,7 @@ window.__ModuleLoader__.load({
       sectionCurrent: '已是最新',
       sectionError: '读取失败',
       colName: '插件',
-      colVersion: '当前版本',
-      colLatest: '目标版本',
-      colDsh: 'dsh 要求',
+      colVersions: '版本',
       colActions: '操作',
       update: '更新',
       'updateTo:one': '更新至',
@@ -140,9 +138,7 @@ window.__ModuleLoader__.load({
       sectionCurrent: 'Up to date',
       sectionError: 'Unreadable',
       colName: 'Plugin',
-      colVersion: 'Installed',
-      colLatest: 'Target',
-      colDsh: 'dsh requirement',
+      colVersions: 'Version',
       colActions: 'Actions',
       update: 'Update',
       'updateTo:one': 'Update to',
@@ -210,95 +206,96 @@ window.__ModuleLoader__.load({
 
     const CSS = `
 .pu-root{
-  --pu-gap:16px;
-  --pu-cols:26px minmax(200px,1fr) 92px 92px minmax(130px,180px) 148px;
-  display:flex;flex-direction:column;gap:20px;padding:8px 0 32px;
-  color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.55;
+  --pu-cols:minmax(0,1fr) 140px 110px;
+  display:flex;flex-direction:column;gap:26px;padding:0 0 40px;
+  color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;
   font-variant-numeric:tabular-nums;
 }
-.pu-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-bottom:4px;
-  border-bottom:1px solid var(--dsw-alias-border-l1)}
+.pu-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .pu-spacer{flex:1}
-.pu-context{color:var(--dsw-alias-label-secondary);font-size:12px;letter-spacing:.01em}
-.pu-btn{appearance:none;border:1px solid var(--dsw-alias-border-l1);background:transparent;
-  color:var(--dsw-alias-label-primary);border-radius:7px;padding:5px 11px;font:inherit;font-size:12.5px;
-  cursor:pointer;transition:background .12s,border-color .12s,opacity .12s;white-space:nowrap}
-.pu-btn:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l2)}
-.pu-btn:disabled{opacity:.5;cursor:default}
-.pu-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
-.pu-btn-sm{padding:3px 9px;font-size:12px;border-radius:6px}
-.pu-actions .pu-btn{justify-content:center;white-space:nowrap}
-.pu-actions{flex-wrap:nowrap;min-width:0}
-.pu-btn-primary{background:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);color:#fff}
-.pu-btn-primary:hover:not(:disabled){filter:brightness(1.06)}
-.pu-filter{flex:0 0 190px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base);
-  color:var(--dsw-alias-label-primary);border-radius:7px;padding:5px 10px;font:inherit;font-size:12.5px}
-.pu-filter:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.pu-context{color:var(--dsw-alias-label-tertiary);font-size:12px}
+.pu-btn{appearance:none;border:1px solid var(--dsw-alias-border-l2);background:transparent;
+  color:var(--dsw-alias-label-primary);border-radius:var(--dsw-radius-md,8px);padding:6px 14px;
+  font:inherit;font-size:13px;line-height:18px;cursor:pointer;white-space:nowrap;
+  transition:background .12s,border-color .12s,opacity .12s}
+.pu-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,var(--dsw-alias-bg-layer-2))}
+.pu-btn:disabled{opacity:.45;cursor:default}
+.pu-btn:focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.pu-btn-sm{padding:4px 14px;font-size:12px;border-radius:6px;min-width:64px;text-align:center}
+.pu-btn-primary{background:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-primary);
+  color:var(--dsw-alias-bg-base);font-weight:500}
+.pu-btn-primary:hover:not(:disabled){opacity:.86;background:var(--dsw-alias-label-primary)}
+.pu-filter{flex:0 0 210px;border:1px solid var(--dsw-alias-border-l4,var(--dsw-alias-border-l2));
+  background:transparent;color:var(--dsw-alias-label-primary);border-radius:var(--dsw-radius-md,8px);
+  padding:6px 12px;font:inherit;font-size:13px}
+.pu-filter:focus-visible{outline:none;border-color:var(--dsw-alias-state-business-primary,var(--dsw-alias-brand-primary))}
 .pu-section{display:flex;flex-direction:column;gap:8px}
-.pu-section-head{display:flex;align-items:baseline;gap:8px;margin:0}
-.pu-section-title{font-size:13px;font-weight:600;letter-spacing:.01em}
-.pu-count{font-size:11.5px;font-weight:400;color:var(--dsw-alias-label-secondary);
-  background:var(--dsw-alias-bg-layer-2);border-radius:999px;padding:0 7px;line-height:18px}
-.pu-list{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;overflow:hidden;
-  background:var(--dsw-alias-bg-layer-1)}
-.pu-head-row,.pu-row{display:grid;grid-template-columns:var(--pu-cols);gap:12px;align-items:center;
-  padding:8px 14px}
-.pu-head-row{background:var(--dsw-alias-bg-layer-2);border-bottom:1px solid var(--dsw-alias-border-l1);
-  padding-top:6px;padding-bottom:6px}
-.pu-head-cell{font-size:11px;font-weight:600;color:var(--dsw-alias-label-secondary);
-  letter-spacing:.03em;text-transform:none}
+.pu-section-head{display:flex;align-items:center;gap:8px;margin:0;padding:0 8px}
+.pu-section-title{font-size:14px;font-weight:500;line-height:22px}
+.pu-count{color:var(--dsw-alias-label-tertiary);font-size:12px;font-weight:400}
+.pu-list{display:flex;flex-direction:column;gap:2px}
+.pu-row{display:grid;grid-template-columns:var(--pu-cols);align-items:center;gap:12px;
+  padding:10px 12px;border-radius:var(--dsw-radius-lg,10px);min-width:0}
+.pu-row:hover{background:var(--dsw-alias-interactive-bg-hover,var(--dsw-alias-bg-layer-1))}
+.pu-head-row{display:grid;grid-template-columns:var(--pu-cols);gap:12px;align-items:center;
+  padding:0 12px 4px;border-bottom:1px solid var(--dsw-alias-border-l1)}
+.pu-head-cell{font-size:11px;font-weight:600;color:var(--dsw-alias-label-tertiary);letter-spacing:.02em}
 .pu-head-actions{text-align:right}
-.pu-row{border-top:1px solid var(--dsw-alias-border-l1)}
-.pu-row:first-of-type{border-top:none}
-.pu-row:hover{background:var(--dsw-alias-bg-layer-2)}
-.pu-cell{min-width:0;overflow:hidden;text-overflow:ellipsis}
-.pu-head-row>*,.pu-row>*{min-width:0}
-.pu-cell-check{display:flex;align-items:center;justify-content:center}
-.pu-check{width:15px;height:15px;accent-color:var(--dsw-alias-brand-primary);cursor:pointer;margin:0}
+.pu-cell{min-width:0}
+.pu-main{display:flex;align-items:center;gap:10px;min-width:0}
+.pu-check{width:16px;height:16px;flex:none;accent-color:var(--dsw-alias-brand-primary);
+  cursor:pointer;margin:0}
+.pu-check-slot{width:16px;flex:none}
 .pu-name{display:flex;flex-direction:column;gap:1px;min-width:0}
-.pu-name-title{font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.pu-name-pkg{font-size:11px;color:var(--dsw-alias-label-secondary);overflow:hidden;
-  text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-.pu-num{text-align:right;font-size:12.5px;white-space:nowrap}
-.pu-mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-.pu-dim{color:var(--dsw-alias-label-secondary);font-size:12px}
-.pu-err{color:var(--dsw-alias-state-error-primary)}
-.pu-note{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.pu-badge{display:inline-flex;align-items:center;border-radius:5px;padding:1px 7px;
-  font-size:11px;line-height:17px;white-space:nowrap;border:1px solid transparent;font-weight:500}
-.pu-badge-update{background:rgba(35,134,54,.12);color:var(--dsw-alias-state-success-primary);border-color:rgba(35,134,54,.3)}
-.pu-badge-blocked{background:rgba(191,90,0,.12);color:var(--dsw-alias-state-warn-primary);border-color:rgba(191,90,0,.3)}
-.pu-badge-error{background:rgba(190,30,30,.12);color:var(--dsw-alias-state-error-primary);border-color:rgba(190,30,30,.3)}
-.pu-badge-muted{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);border-color:var(--dsw-alias-border-l1)}
+.pu-name-title{font-size:14px;font-weight:500;line-height:20px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.pu-name-pkg{font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-family:var(--dsw-font-mono,ui-monospace,SFMono-Regular,Menlo,monospace)}
+.pu-versions{display:flex;align-items:baseline;gap:6px;white-space:nowrap;font-size:12.5px}
+.pu-version-old{color:var(--dsw-alias-label-tertiary)}
+.pu-arrow{color:var(--dsw-alias-label-tertiary);font-size:11px}
+.pu-version-new{font-weight:500}
+.pu-mono{font-family:var(--dsw-font-mono,ui-monospace,SFMono-Regular,Menlo,monospace)}
+.pu-dim{color:var(--dsw-alias-label-tertiary);font-size:12px}
+.pu-err{color:var(--dsw-alias-state-error-primary);font-size:12px}
+.pu-note{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
+.pu-badge{display:inline-flex;align-items:center;border-radius:4px;padding:0 6px;
+  font-size:11px;line-height:18px;white-space:nowrap;font-weight:500}
+.pu-badge-blocked{background:var(--dsw-alias-state-warn-tertiary,rgba(191,90,0,.12));
+  color:var(--dsw-alias-state-warn-primary)}
+.pu-badge-muted{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}
 .pu-actions{display:flex;gap:6px;justify-content:flex-end;align-items:center;flex-wrap:nowrap}
-.pu-empty{padding:40px 16px;text-align:center;color:var(--dsw-alias-label-secondary);font-size:12.5px}
-.pu-error{color:var(--dsw-alias-state-error-primary);font-size:12px}
-.pu-task{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;
-  background:var(--dsw-alias-bg-layer-1);padding:12px 14px;display:flex;flex-direction:column;gap:9px}
-.pu-task-head{display:flex;align-items:baseline;gap:10px;font-size:12.5px}
-.pu-task-head strong{font-weight:600}
-.pu-bar-track{height:3px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);overflow:hidden}
-.pu-bar-fill{height:100%;border-radius:999px;background:var(--dsw-alias-brand-primary);transition:width .25s ease}
-.pu-progress{display:flex;flex-direction:column;gap:5px}
+.pu-actions .pu-btn{justify-content:center}
+.pu-empty{padding:48px 16px;text-align:center;color:var(--dsw-alias-label-tertiary);font-size:13px}
+.pu-error{color:var(--dsw-alias-state-error-primary);font-size:12px;white-space:pre-wrap;
+  font-family:var(--dsw-font-mono,ui-monospace,Menlo,monospace)}
+.pu-task{display:flex;flex-direction:column;gap:10px;padding:12px 14px;
+  border-radius:var(--dsw-radius-lg,10px);background:var(--dsw-alias-bg-layer-1)}
+.pu-task-head{display:flex;align-items:center;gap:10px;font-size:13px}
+.pu-bar-track{height:3px;border-radius:2px;background:var(--dsw-alias-border-l1);overflow:hidden}
+.pu-bar-fill{height:100%;background:var(--dsw-alias-label-primary);transition:width .25s ease}
+.pu-progress{display:flex;flex-direction:column;gap:4px}
 .pu-progress-item{display:flex;justify-content:space-between;gap:12px;font-size:12px}
-.pu-token{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;
-  background:var(--dsw-alias-bg-layer-1);padding:12px 14px;display:flex;flex-direction:column;gap:9px}
-.pu-token-head{display:flex;align-items:baseline;gap:10px;font-size:12.5px}
-.pu-token-hint{margin:0;font-size:11.5px;line-height:1.6;color:var(--dsw-alias-label-secondary)}
+.pu-token{display:flex;flex-direction:column;gap:10px;padding:14px 16px;
+  border-radius:var(--dsw-radius-lg,10px);background:var(--dsw-alias-bg-layer-1)}
+.pu-token-head{display:flex;align-items:baseline;gap:10px;font-size:13px}
+.pu-token-hint{margin:0;font-size:12px;line-height:19px;color:var(--dsw-alias-label-tertiary)}
 .pu-token-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.pu-token-input{flex:1 1 260px;min-width:200px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-.pu-ok{color:var(--dsw-alias-state-success-primary);font-size:11.5px}
-.pu-modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.42);display:flex;align-items:center;
-  justify-content:center;z-index:1000;padding:24px}
+.pu-token-input{flex:1 1 280px;min-width:220px;
+  font-family:var(--dsw-font-mono,ui-monospace,SFMono-Regular,Menlo,monospace)}
+.pu-ok{color:var(--dsw-alias-state-success-primary);font-size:12px}
+.pu-modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;
+  align-items:center;justify-content:center;z-index:1000;padding:24px}
 .pu-modal{background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);
-  border:1px solid var(--dsw-alias-border-l1);border-radius:12px;max-width:520px;width:100%;
-  padding:20px;display:flex;flex-direction:column;gap:14px;box-shadow:0 18px 48px rgba(0,0,0,.32)}
-.pu-modal h3{margin:0;font-size:14px;font-weight:600}
-.pu-modal p{margin:0;font-size:12.5px;color:var(--dsw-alias-label-secondary);line-height:1.65}
+  border-radius:var(--dsw-radius-xl,14px);max-width:520px;width:100%;padding:22px;
+  display:flex;flex-direction:column;gap:14px;box-shadow:0 18px 48px rgba(0,0,0,.3)}
+.pu-modal h3{margin:0;font-size:15px;font-weight:500;line-height:22px}
+.pu-modal p{margin:0;font-size:13px;line-height:21px;color:var(--dsw-alias-label-secondary)}
 .pu-modal-foot{display:flex;justify-content:flex-end;gap:8px}
-@media (max-width:900px){
-  .pu-root{--pu-cols:24px minmax(150px,1fr) 78px 78px 148px}
-  .pu-col-hide,.pu-head-row .pu-col-hide{display:none}
+@media (max-width:860px){
+  .pu-root{--pu-cols:minmax(0,1fr) 140px}
+  .pu-head-cell:nth-child(2),.pu-row>.pu-cell:nth-child(2){display:none}
 }
 `
 
@@ -739,11 +736,11 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { className: 'pu-head-row', role: 'row' },
-            h('span', { className: 'pu-head-cell', 'aria-hidden': 'true' }),
-            h('span', { className: 'pu-head-cell', role: 'columnheader' }, props.columns.name),
-            h('span', { className: 'pu-head-cell pu-num', role: 'columnheader' }, props.columns.version),
-            h('span', { className: 'pu-head-cell pu-num', role: 'columnheader' }, props.columns.latest),
-            h('span', { className: 'pu-head-cell pu-col-hide', role: 'columnheader' }, props.columns.dsh),
+            h('div', { className: 'pu-cell pu-main' },
+              h('span', { className: 'pu-check-slot', 'aria-hidden': 'true' }),
+              h('span', { className: 'pu-head-cell', role: 'columnheader' }, props.columns.name),
+            ),
+            h('span', { className: 'pu-head-cell', role: 'columnheader' }, props.columns.versions),
             h('span', { className: 'pu-head-cell pu-head-actions', role: 'columnheader' }, props.columns.actions),
           ),
           props.entries.map(props.render),
@@ -946,9 +943,7 @@ window.__ModuleLoader__.load({
 
       const columns = {
         name: t('colName'),
-        version: t('colVersion'),
-        latest: t('colLatest'),
-        dsh: t('colDsh'),
+        versions: t('colVersions'),
         actions: t('colActions'),
       }
 
@@ -960,12 +955,21 @@ window.__ModuleLoader__.load({
         const checked = state.selected[entry.id] !== undefined
         const exempted = entry.exempted === true
         const unmet = entry.dsh?.ok === false
+        const target = latestText(entry)
+        const hasNewer = (entry.status === 'update' || entry.status === 'incompatible-update') && target !== (entry.version ?? '')
+        // The requirement or state reads as a subtitle, so the table keeps one
+        // identity column instead of a second row of loosely related columns.
+        const subtitle = unmet
+          ? h('span', { className: 'pu-name-pkg' }, `${t('requirements')}: ${requirementText(entry)}`)
+          : exempted
+            ? h('span', { className: 'pu-name-pkg' }, t('exempted'))
+            : h('span', { className: 'pu-name-pkg' }, entry.spec ?? entry.name)
         return h(
           'div',
           { className: 'pu-row', key: entry.id, role: 'row' },
           h(
-            'span',
-            { className: 'pu-cell pu-cell-check', role: 'cell' },
+            'div',
+            { className: 'pu-cell pu-main', role: 'cell' },
             selectable
               ? h('input', {
                   type: 'checkbox',
@@ -975,33 +979,38 @@ window.__ModuleLoader__.load({
                   'aria-label': `${t('colName')}: ${entry.title}`,
                   onChange: () => toggle(entry.id),
                 })
-              : null,
+              : h('span', { className: 'pu-check-slot', 'aria-hidden': 'true' }),
+            h(
+              'span',
+              { className: 'pu-name' },
+              h('span', { className: 'pu-name-title', title: entry.title }, entry.title),
+              subtitle,
+            ),
           ),
           h(
-            'span',
-            { className: 'pu-cell pu-name', role: 'cell' },
-            h('span', { className: 'pu-name-title', title: entry.title }, entry.title),
-            h('span', { className: 'pu-name-pkg', title: entry.spec ?? entry.name }, entry.name),
+            'div',
+            { className: 'pu-cell pu-versions', role: 'cell' },
+            hasNewer
+              ? h(
+                  React.Fragment,
+                  null,
+                  h('span', { className: 'pu-version-old pu-mono' }, entry.version),
+                  h('span', { className: 'pu-arrow', 'aria-hidden': 'true' }, '→'),
+                  h('span', { className: 'pu-version-new pu-mono' }, target),
+                )
+              : h('span', { className: 'pu-version-old pu-mono' }, entry.version ?? '—'),
           ),
-          h('span', { className: 'pu-cell pu-num pu-mono', role: 'cell' }, entry.version ?? '—'),
-          h('span', { className: 'pu-cell pu-num pu-mono', role: 'cell' }, latestText(entry)),
           h(
-            'span',
-            { className: 'pu-cell pu-col-hide', role: 'cell' },
-            unmet ? h(Badge, { tone: 'blocked' }, t('blocked')) : exempted ? h(Badge, { tone: 'muted' }, t('exempted')) : h('span', { className: 'pu-dim' }, requirementText(entry)),
-          ),
-          h(
-            'span',
+            'div',
             { className: 'pu-cell pu-actions', role: 'cell' },
-            entry.status === 'update' || entry.status === 'incompatible-update'
-              ? h('button', { type: 'button', className: 'pu-btn pu-btn-primary pu-btn-sm', disabled: busy, onClick: () => requestApply(entry.id, entry) }, `${t('updateTo:one')} ${latestText(entry)}`)
+            hasNewer
+              ? h('button', { type: 'button', className: 'pu-btn pu-btn-primary pu-btn-sm', disabled: busy, onClick: () => requestApply(entry.id, entry) }, t('update'))
               : null,
             unmet ? h('button', { type: 'button', className: 'pu-btn pu-btn-sm', disabled: busy, onClick: () => requestApply(entry.id, entry) }, t('accept')) : null,
             exempted ? h('button', { type: 'button', className: 'pu-btn pu-btn-sm', disabled: busy, onClick: () => void undoExemption(entry) }, t('undoExemption')) : null,
-            entry.status === 'builtin' ? h('span', { className: 'pu-dim pu-note' }, t('builtinNote')) : null,
-            entry.status === 'current' ? h('span', { className: 'pu-dim pu-note' }, t('upToDate')) : null,
-            entry.status === 'local' ? h('span', { className: 'pu-dim pu-note' }, t('local')) : null,
-            entry.status === 'unknown' ? h('span', { className: 'pu-dim pu-note' }, t('unknown')) : null,
+            entry.status === 'builtin' || entry.status === 'current' || entry.status === 'local' || entry.status === 'unknown'
+              ? h('span', { className: 'pu-dim' }, t(entry.status === 'builtin' ? 'builtinNote' : entry.status === 'current' ? 'upToDate' : entry.status === 'local' ? 'local' : 'unknown'))
+              : null,
             entry.status === 'error' ? h('span', { className: 'pu-err pu-note' }, entry.probe?.note ?? t('errorNote')) : null,
           ),
         )
