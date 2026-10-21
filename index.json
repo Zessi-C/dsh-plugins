@@ -91,11 +91,11 @@
       "versions": [
         {
           "version": "0.14.0",
-          "publishTimestamp": 1792590359,
+          "publishTimestamp": 1792591950,
           "source": {
             "type": "git",
             "url": "https://github.com/Zessi-C/dsh-plugins.git",
-            "commit": "63da582e8a4541dfa3c4eb58f97e966fa3906adb",
+            "commit": "9453ef3561476d65019abd97cc8dc51c69f20a69",
             "path": "packages/dsh-lan-gate"
           },
           "engines": {
@@ -178,11 +178,11 @@
       "versions": [
         {
           "version": "0.4.2",
-          "publishTimestamp": 1792572596,
+          "publishTimestamp": 1792591096,
           "source": {
             "type": "git",
             "url": "https://github.com/Zessi-C/dsh-plugins.git",
-            "commit": "fb176df4ce194f7e20d062e06cb754932c739083",
+            "commit": "85e88114f204f8aadf8d16caef8ba4ba6964635b",
             "path": "packages/dsh-plugin-updater"
           },
           "engines": {
