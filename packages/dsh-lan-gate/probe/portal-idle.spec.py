@@ -17,6 +17,7 @@ import importlib.util
 import inspect
 import os
 import sys
+import json
 import tempfile
 import time
 import unittest
@@ -257,6 +258,46 @@ class ReapOnceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sorted(self.portal.last_seen),
                          ["alice", "bob", "erin"])
 
+    async def test_request_during_reap_scan_does_not_get_stopped(self):
+        """回收器判»空闲»与真正 systemctl stop 之间插进来的请求必须救回实例。
+
+        旧实现只拿扫描开始时的 `seen` 判断一次，然后 `await unit_active` /
+        `await unit_stop`（真实环境里是两次 subprocess，几十毫秒）。
+        用户恰好在这段时间点了一下页面，实例照样被停 —— 表现为「刚点就断」；
+        更糟的是结尾的 `last_seen.pop` 把他刚刷新的时间戳也抹掉，
+        下一次请求要再走一遍完整启动。
+        """
+        self.idle_for("alice", 100 * DAY)
+
+        async def active_then_user_clicks(name, cfg):
+            # 模拟：is-active 的 await 期间，用户的新请求抵达并刷新 last_seen
+            self.portal.last_seen["alice"] = time.time()
+            return True
+
+        with mock.patch.object(portal, "unit_active", active_then_user_clicks):
+            await self.portal.reap_once()
+        self.assertEqual(self.stopped, [])            # 不能被停
+        self.assertIn("alice", self.portal.last_seen)  # 新时间戳必须保留
+
+    async def test_ws_opened_during_reap_scan_does_not_get_stopped(self):
+        """同上，但插入的是「新开了一条 WS」——那也是人还在用。"""
+        self.idle_for("alice", 100 * DAY)
+
+        async def active_then_ws_opens(name, cfg):
+            self.portal._ws_enter("alice")
+            return True
+
+        with mock.patch.object(portal, "unit_active", active_then_ws_opens):
+            await self.portal.reap_once()
+        self.assertEqual(self.stopped, [])
+
+    async def test_genuinely_idle_user_is_still_reaped(self):
+        # 反向保护：加了「重新看一眼」之后，真空闲的用户必须照旧被回收。
+        self.idle_for("alice", 100 * DAY)
+        await self.portal.reap_once()
+        self.assertEqual(self.stopped, ["alice"])
+        self.assertNotIn("alice", self.portal.last_seen)
+
 
 class WiringTest(unittest.TestCase):
     """真实代码路径的接线检查：改坏了这里就说明保活/回收没接上。"""
@@ -278,6 +319,175 @@ class WiringTest(unittest.TestCase):
         src = inspect.getsource(portal.Portal._handle)
         self.assertIn("harden_dsh_home(", src)
         self.assertLess(src.index("harden_dsh_home("), src.index("ensure_instance("))
+
+
+class RequestHeaderTest(unittest.TestCase):
+    """反代请求头：绝不能让浏览器替上游 dsh 决定「我是谁」。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        cfg = dict(portal.DEFAULT_CONFIG)
+        cfg["secret_file"] = os.path.join(self.tmp.name, "secret")
+        cfg["log_file"] = os.path.join(self.tmp.name, "access.log")
+        self.portal = portal.Portal(cfg)
+
+    def rewrite(self, headers, port=43001, authority="100.96.52.76:3080"):
+        head, _ = self.portal.rewrite_request_head(
+            "GET", "/", "HTTP/1.1", headers, port, authority)
+        return head.decode("latin1")
+
+    def cookie_line(self, text):
+        lines = [l for l in text.split("\r\n") if l.lower().startswith("cookie:")]
+        return lines[0] if lines else None
+
+    def test_upstream_session_cookie_is_stripped(self):
+        """核心不变量：客户端带来的 dsh-auth-* 不许进上游。
+
+        门户按**门户会话**决定这次请求代表谁，而上游 dsh 只认 dsh-auth-<hash>。
+        若原样转发，B 账号拿到 A 那张 cookie 就能一个请求直接以 A 的身份操作
+        A 的实例 —— 门户的账号隔离被绕过。
+        """
+        text = self.rewrite([("Host", "x"), ("Cookie", "dsh-auth-AAAA=STOLEN")])
+        self.assertIsNone(self.cookie_line(text), text)
+
+    def test_portal_cookie_survives_but_upstream_one_goes(self):
+        text = self.rewrite([("Cookie", "dsh-portal-session=a.b.c; dsh-auth-XYZ=SECRET; other=1")])
+        line = self.cookie_line(text)
+        self.assertIsNotNone(line)
+        self.assertNotIn("dsh-auth-", line)
+        self.assertIn("dsh-portal-session=a.b.c", line)
+        self.assertIn("other=1", line)
+
+    def test_prefix_match_is_case_insensitive(self):
+        # 上游/浏览器都可能换大小写；判断必须大小写无关。
+        text = self.rewrite([("Cookie", "DSH-Auth-ABC=x")])
+        self.assertIsNone(self.cookie_line(text), text)
+
+    def test_harmless_cookie_is_passed_through(self):
+        text = self.rewrite([("Cookie", "theme=dark")])
+        self.assertIn("theme=dark", self.cookie_line(text) or "")
+
+    def test_hop_by_hop_headers_are_dropped(self):
+        text = self.rewrite([("Connection", "keep-alive"), ("Keep-Alive", "timeout=5"),
+                             ("Proxy-Connection", "keep-alive"),
+                             ("Proxy-Authorization", "Basic x"), ("TE", "trailers")])
+        low = text.lower()
+        for gone in ("proxy-connection:", "proxy-authorization:", "keep-alive:"):
+            self.assertNotIn(gone, low)
+        # connection 由门户统一重写，且只能出现一次
+        self.assertEqual(low.count("\r\nconnection:"), 1, text)
+
+    def test_forwarding_headers_are_not_injected(self):
+        # dsh 见到 x-forwarded-* 会认为「对端是代理，不是用户」并拒绝；
+        # 客户端自己带来的那些也原样保留（这是 dsh 自己的判定，不是门户的安全边界）。
+        text = self.rewrite([("Host", "x")])
+        self.assertNotIn("x-forwarded-for", text.lower())
+        self.assertNotIn("x-real-ip", text.lower())
+
+    def test_host_always_rewritten_to_loopback_backend(self):
+        text = self.rewrite([("Host", "evil.example")], port=43007)
+        self.assertIn("host: 127.0.0.1:43007", text)
+        self.assertNotIn("evil.example", text)
+
+
+class HealthzTest(unittest.IsolatedAsyncioTestCase):
+    """/__portal/healthz 是免登录端点：不能泄露任何账号相关数字。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        cfg = dict(portal.DEFAULT_CONFIG)
+        cfg["secret_file"] = os.path.join(self.tmp.name, "secret")
+        cfg["log_file"] = os.path.join(self.tmp.name, "access.log")
+        cfg["bind"], cfg["port"] = "127.0.0.1", 3099
+        cfg["public_authorities"] = ["127.0.0.1:3099"]
+        self.portal = portal.Portal(cfg)
+
+    async def get(self, path, headers=None):
+        payload = (f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:3099\r\n"
+                   + "".join(f"{k}: {v}\r\n" for k, v in (headers or []))
+                   + "\r\n").encode()
+
+        class W:
+            def __init__(self):
+                self.buf = b""
+
+            def write(self, data):
+                self.buf += data
+
+            async def drain(self):
+                pass
+
+            def get_extra_info(self, _k):
+                return ("203.0.113.9", 1234)
+
+        class R:
+            def __init__(self, data):
+                self.data = data
+
+            async def read(self, n=4096):
+                out, self.data = self.data[:n], self.data[n:]
+                return out
+
+        w = W()
+        await self.portal.handle(R(payload), w)
+        head, _, body = w.buf.partition(b"\r\n\r\n")
+        return head.decode("latin1"), body
+
+    async def test_healthz_is_unauthenticated(self):
+        # 这个端点设计上就免登录（监控/反代健康检查在登录前用）—— 钉住这个语义，
+        # 免得以后有人为了「别泄露数字」顺手把它改成要登录，反而打挂监控。
+        head, body = await self.get("/__portal/healthz")
+        self.assertIn("200", head.split("\r\n")[0])
+        self.assertIs(json.loads(body).get("ok"), True)
+
+    async def test_healthz_does_not_leak_instance_count(self):
+        # 旧实现回 {"instances": len(last_seen)} —— 把「此刻有几个不同账号在用」
+        # 告诉任何连得上门户的人（tailnet 内人人可达）。健康检查不需要这个数。
+        self.portal.last_seen["alice"] = time.time()
+        self.portal.last_seen["bob"] = time.time()
+        _, body = await self.get("/__portal/healthz")
+        self.assertEqual(json.loads(body), {"ok": True})
+        self.assertNotIn("instances", body.decode())
+
+
+class SessionCookieTest(unittest.TestCase):
+    """门户会话 cookie 的属性。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        cfg = dict(portal.DEFAULT_CONFIG)
+        cfg["secret_file"] = os.path.join(self.tmp.name, "secret")
+        cfg["log_file"] = os.path.join(self.tmp.name, "access.log")
+        self.portal = portal.Portal(cfg)
+
+    def test_cookie_attributes(self):
+        c = self.portal.make_cookie("alice")
+        self.assertIn("Path=/", c)
+        self.assertIn("HttpOnly", c)          # JS 读不到
+        self.assertIn("SameSite=Lax", c)      # 跨站 POST（表单/跳转）不带
+        self.assertIn("Max-Age=", c)
+
+    def test_cookie_signature_is_hmac_bound_to_user(self):
+        # 只改用户名、沿用别人的签名 → 必须读不出来。
+        c = self.portal.make_cookie("alice").split(";")[0]
+        value = c.split("=", 1)[1]
+        _user, expires, sig = value.split(".")
+        forged = f"dsh-portal-session=bob.{expires}.{sig}"
+        self.assertIsNone(self.portal.read_session([("Cookie", forged)]))
+
+    def test_expired_cookie_rejected(self):
+        past = int(time.time()) - 10
+        sig = self.portal._sign("alice", past)
+        got = self.portal.read_session(
+            [("Cookie", f"dsh-portal-session=alice.{past}.{sig}")])
+        self.assertIsNone(got)
+
+    def test_valid_cookie_roundtrips(self):
+        c = self.portal.make_cookie("alice").split(";")[0]
+        self.assertEqual(self.portal.read_session([("Cookie", c)]), "alice")
 
 
 class UpstreamLogLevelTest(unittest.TestCase):

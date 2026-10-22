@@ -1606,7 +1606,8 @@ def cmd_install(t, a):
             parts.append(
                 f'if [ -f {q} ] && cmp -s "$TMP" {q}; then echo "SAME {dest}"; else\n'
                 f'  mkdir -p "$(dirname {q})"\n'
-                f'  $S install -m {mode} "$TMP" {q} && echo "WROTE {dest}"; fi\n'
+                f'  if $S install -m {mode} "$TMP" {q}; then echo "WROTE {dest}"; '
+                f'else echo "FAILED {dest}"; fi; fi\n'
                 f'rm -f "$TMP"\n')
     if not check:
         parts.append('$S systemctl daemon-reload && echo "RELOAD=ok"\n')
@@ -1623,7 +1624,7 @@ def cmd_install(t, a):
 
     results = {}
     for line in (so or "").splitlines():
-        for tag in ("SAME", "WROTE", "DIFF", "MISSING", "CONFIG_CREATED"):
+        for tag in ("SAME", "WROTE", "DIFF", "MISSING", "FAILED", "CONFIG_CREATED"):
             if line.startswith(tag + " "):
                 results.setdefault(tag, []).append(line.split(" ", 1)[1])
 
@@ -1639,6 +1640,12 @@ def cmd_install(t, a):
             mark, tail = f"{C.G}✓{C.X}", "未变化"
         elif dest in (results.get("WROTE") or []):
             mark, tail = f"{C.G}✓{C.X}", "已写入"
+        elif dest in (results.get("FAILED") or []):
+            # install 本身失败（权限/只读挂载/磁盘满）：以前这里只在 && 右侧 echo，
+            # 失败时一行结果都不打，被归到下面的「未确认」而**不计入 bad**，
+            # 于是 install 照样打印成功 —— 运维以为落盘了，其实机器上还是旧的。
+            mark, tail = f"{C.R}✗{C.X}", "写入失败（看上面的 sudo/install 报错）"
+            bad += 1
         elif dest in (results.get("DIFF") or []):
             mark, tail = f"{C.Y}≠{C.X}", "与仓库不一致"
             bad += 1
@@ -1646,7 +1653,10 @@ def cmd_install(t, a):
             mark, tail = f"{C.R}✗{C.X}", "目标机上不存在"
             bad += 1
         else:
-            mark, tail = f"{C.Y}!{C.X}", "未确认"
+            # 没有任何一条结果行认领这个文件 = 状态未知。校验模式下不能当成「一致」：
+            # 一个 --check 的假阴性（明明有漂移却报绿）比一次误报坏得多。
+            mark, tail = f"{C.Y}!{C.X}", "未确认（脚本没回结果）"
+            bad += 1
         print(f"  {mark} {pad(name, 22)} {C.D}{dest}{C.X}")
         print(f"      {C.D}{desc} · {tail}{C.X}")
 
@@ -1658,7 +1668,14 @@ def cmd_install(t, a):
             print(f"  {C.G}目标机与仓库一致{C.X}")
         return 1 if bad else 0
 
-    print(f"  {C.G}daemon-reload ok{C.X}")
+    if bad:
+        print(f"  {C.R}{bad} 项没落盘{C.X} —— 修掉上面的报错后重跑（install 是幂等的）")
+        return 1
+    if "RELOAD=ok" in (so or ""):
+        print(f"  {C.G}daemon-reload ok{C.X}")
+    else:
+        print(f"  {C.R}daemon-reload 失败{C.X} —— systemd 单元改动尚未生效")
+        return 1
     if results.get("CONFIG_CREATED"):
         print(f"  {C.Y}!{C.X} /etc/dsh-portal/config.json 原先不存在，已从示例生成 ——"
               f" 请填入真实 bind IP 与 public_authorities")

@@ -610,9 +610,9 @@ async def port_open(port, host="127.0.0.1", timeout=1.0):
 
 
 async def launch_token(name, cfg):
-    """从 journal 里取该实例最近一次启动的 token。"""
+    """从 journal 里取该实例最近一次启动的 token（精确匹配，不限300行）。"""
     rc, out = await run_cmd(
-        ["journalctl", "-u", unit_for(name, cfg), "--no-pager", "-n", "300", "-o", "cat"],
+        ["journalctl", "-u", unit_for(name, cfg), "-b", "--no-pager", "-g", "token=", "-o", "cat"],
         timeout=20)
     toks = re.findall(r"token=([A-Za-z0-9_.\-]+)", out.decode("utf-8", "replace"))
     return toks[-1] if toks else None
@@ -711,6 +711,8 @@ class Portal:
         self.seeded = set()
         # username -> 门户为该用户换来的实例会话 cookie（转发时注入上游）
         self.sessions = {}
+        # username -> 缓存的该实例 Set-Cookie 列表，供多设备/新浏览器快速分发，避免重复翻日志
+        self.instance_cookie_sets = {}
         allowed = {a.lower().strip() for a in (cfg.get("public_authorities") or [])}
         bind, port = cfg["bind"], cfg["port"]
         allowed |= {f"{bind}:{port}", bind, f"localhost:{port}", f"127.0.0.1:{port}"}
@@ -934,11 +936,14 @@ class Portal:
     async def bootstrap_session(self, username, port, restart=False):
         """用实例的启动 token 换 dsh 的会话 cookie（浏览器永不接触 token）。"""
         if restart:
-            await unit_restart(username, self.cfg)
-            for _ in range(40):
-                if await port_open(port):
-                    break
-                await asyncio.sleep(0.5)
+            if await port_open(port):
+                self.log("info", "instance is already running, skip destructive restart", user=username, port=port)
+            else:
+                await unit_restart(username, self.cfg)
+                for _ in range(40):
+                    if await port_open(port):
+                        break
+                    await asyncio.sleep(0.5)
         token = await launch_token(username, self.cfg)
         if not token:
             return None
@@ -1022,6 +1027,24 @@ class Portal:
                     r"^https?://" + re.escape(public_authority), f"http://{upstream_host}",
                     value, flags=re.I))
                 continue
+            if low == "cookie":
+                # 浏览器带来的 dsh-auth-* 一律不许进上游。
+                #
+                # 为什么必须自己筛：门户按「门户会话」决定这次请求代表谁，但上游
+                # dsh 只认 dsh-auth-<hash> 这张 cookie。若原样转发，B 账号只要
+                # 手里有 A 账号那张 cookie（cookie-tossing：同站姊妹主机覆盖同名
+                # cookie；Docker/VM 里 --host 0.0.0.0 的实例把 token 回显出来；
+                # 用户自己拷贝），一个请求就能绕过门户、直接以 A 的身份操作 A 的
+                # 实例 —— 门户的账号隔离完全失效。经验证：带着别人的 cookie 的
+                # 请求确实会被上游当成已登录。
+                #
+                # 门户自己换来的会话由 bootstrap_session/ensure_session 注入，
+                # 不依赖浏览器这张；这里只做减法，不改写值。
+                kept = [p.strip() for p in value.split(";")
+                        if p.strip() and not p.strip().lower().startswith(DSH_COOKIE_PREFIX)]
+                if kept:
+                    out.append(f"cookie: {'; '.join(kept)}")
+                continue                      # 全被筛掉就不发 cookie 头
             out.append(f"{key}: {value}")
         if not saw_origin:
             # 浏览器对同源 GET **不发 Origin**，而 dsh 的部分 /api（实测
@@ -1203,7 +1226,12 @@ class Portal:
 
         # —— 门户自身端点 ——
         if path == cfg["health_path"]:
-            body = json.dumps({"ok": True, "instances": len(self.last_seen)}).encode()
+            # Liveness probe，**未登录**也能打（监控/反向代理健康检查要在登录前用）。
+            # 所以这里不能回任何只有管理员该看到的数字：以前回的是
+            # {"instances": len(self.last_seen)}，等于把「此刻有几个不同账号正在用」
+            # 告诉任何一个连得上 3080 的人（tailnet 里人人可达）。健康检查只需要
+            # 「进程活着、能应答 HTTP」，这两个字就够。
+            body = json.dumps({"ok": True}).encode()
             writer.write(response(200, "OK", [
                 ("Content-Type", "application/json"), ("Content-Length", str(len(body))),
                 ("Connection", "close")], body))
@@ -1313,6 +1341,13 @@ class Portal:
             cookie_names += [p.strip().partition("=")[0] for p in value.split(";")]
         has_dsh_cookie = expected in cookie_names
         if not has_dsh_cookie:
+            cached_sets = self.instance_cookie_sets.get(username)
+            if cached_sets and (header_first(headers, "upgrade", "") or "").lower() != "websocket":
+                writer.write(response(303, "See Other", [
+                    ("Location", target), ("Content-Length", "0"),
+                    ("Connection", "close")] + [("Set-Cookie", s) for s in cached_sets]))
+                await writer.drain()
+                return
             is_upgrade = (header_first(headers, "upgrade", "") or "").lower() == "websocket"
             if is_upgrade:
                 body = ("你的浏览器还没有 dsh 的登录会话。请先刷新一次首页"
@@ -1338,6 +1373,7 @@ class Portal:
                 fresh = await self.bootstrap_session(username, port)
                 if fresh:
                     sets = fresh
+                self.instance_cookie_sets[username] = sets
                 writer.write(response(303, "See Other", [
                     ("Location", target), ("Content-Length", "0"),
                     ("Connection", "close")] + [("Set-Cookie", s) for s in sets]))
@@ -1516,10 +1552,12 @@ class Portal:
             if status == 401:
                 self.log("warn", "upstream 401 → re-bootstrap", user=username,
                          port=port, path=path_only, ws=is_upgrade)
+                self.instance_cookie_sets.pop(username, None)
                 sets = await self.bootstrap_session(username, port)
                 if not sets:
                     sets = await self.bootstrap_session(username, port, restart=True)
                 if sets:
+                    self.instance_cookie_sets[username] = sets
                     if method == "GET" and not is_upgrade:
                         # 幂等：换好 cookie 让浏览器重走一次，用户无感。
                         writer.write(response(303, "See Other", [
@@ -1618,10 +1656,21 @@ class Portal:
             if now - seen < limit:
                 continue
             if await unit_active(user, cfg):
+                # 这两次 await（systemctl is-active / stop）之间是可以插入新请求的。
+                # 必须重新看一眼 last_seen：否则用户在这几十毫秒里点了一下页面，
+                # 实例照样被停（表现为「刚点就断」），而且下一行的 pop 会把他刚
+                # 刷新的时间戳一起抹掉 —— 于是下一次请求又走一遍完整启动。
+                if self.last_seen.get(user, seen) != seen or \
+                        self.ws_active.get(user, 0) > 0:
+                    self.log("info", "idle reap skipped (activity resumed)",
+                             user=user, idle=int(now - seen))
+                    continue
                 await unit_stop(user, cfg)
                 self.log("info", "instance stopped (idle)", user=user,
                          idle=int(now - seen))
-            self.last_seen.pop(user, None)
+            # 只删自己刚才判定的那个值：期间若被刷新过，留着新时间戳。
+            if self.last_seen.get(user) == seen:
+                self.last_seen.pop(user, None)
 
     async def reaper(self):
         while True:
