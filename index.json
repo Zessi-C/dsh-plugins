@@ -46,12 +46,12 @@
       },
       "versions": [
         {
-          "version": "0.2.0",
-          "publishTimestamp": 1792470600,
+          "version": "0.2.1",
+          "publishTimestamp": 1792646613,
           "source": {
             "type": "git",
             "url": "https://github.com/Zessi-C/dsh-plugins.git",
-            "commit": "f156d961223d3552e1563fd1f9819ec4cf954ffd",
+            "commit": "e7d352f2324f4381d03899bf6ada2dcb1363ca01",
             "path": "packages/dsh-eval-kernel"
           },
           "engines": {
@@ -90,12 +90,12 @@
       },
       "versions": [
         {
-          "version": "0.14.1",
-          "publishTimestamp": 1792629023,
+          "version": "0.14.2",
+          "publishTimestamp": 1792646558,
           "source": {
             "type": "git",
             "url": "https://github.com/Zessi-C/dsh-plugins.git",
-            "commit": "068b530f19aba558c7d54b06f442c4b8f8c94af2",
+            "commit": "a9e30fc28d94e70cd337c4054bb12c8980753382",
             "path": "packages/dsh-lan-gate"
           },
           "engines": {
@@ -134,12 +134,12 @@
       },
       "versions": [
         {
-          "version": "1.2.0",
-          "publishTimestamp": 1792478369,
+          "version": "1.2.1",
+          "publishTimestamp": 1792646680,
           "source": {
             "type": "git",
             "url": "https://github.com/Zessi-C/dsh-plugins.git",
-            "commit": "f2441db349317785b576746b2460b7abca989de5",
+            "commit": "95e1b42f66b07f12f714ebe039a425dd83a010ce",
             "path": "packages/dsh-model-thinking-levels"
           },
           "engines": {
@@ -177,12 +177,12 @@
       },
       "versions": [
         {
-          "version": "0.4.2",
-          "publishTimestamp": 1792591096,
+          "version": "0.4.3",
+          "publishTimestamp": 1792646651,
           "source": {
             "type": "git",
             "url": "https://github.com/Zessi-C/dsh-plugins.git",
-            "commit": "85e88114f204f8aadf8d16caef8ba4ba6964635b",
+            "commit": "097a2a1452ad3ef0a01844da88340536c63c3afa",
             "path": "packages/dsh-plugin-updater"
           },
           "engines": {
@@ -222,12 +222,12 @@
       },
       "versions": [
         {
-          "version": "0.2.0",
-          "publishTimestamp": 1792463291,
+          "version": "0.2.1",
+          "publishTimestamp": 1792646651,
           "source": {
             "type": "git",
             "url": "https://github.com/Zessi-C/dsh-plugins.git",
-            "commit": "433bb1814530858f7a9be0745af11aac12260227",
+            "commit": "097a2a1452ad3ef0a01844da88340536c63c3afa",
             "path": "packages/dsh-vibe-orchestrator"
           },
           "engines": {
@@ -265,12 +265,12 @@
       },
       "versions": [
         {
-          "version": "0.3.0",
-          "publishTimestamp": 1792465918,
+          "version": "0.3.1",
+          "publishTimestamp": 1792646680,
           "source": {
             "type": "git",
             "url": "https://github.com/Zessi-C/dsh-plugins.git",
-            "commit": "d5bb4efea13379dd33f75e65668b274e1c52f7fe",
+            "commit": "95e1b42f66b07f12f714ebe039a425dd83a010ce",
             "path": "packages/dsh-web-search-model"
           },
           "engines": {
