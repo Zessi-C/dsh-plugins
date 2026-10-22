@@ -869,6 +869,14 @@ class Portal:
                 self.starting.pop(username, None)
         if not ok:
             return None
+        # 实例是**我们刚拉起来的**：上一轮运行留下的注入 cookie 必然作废
+        # （dsh 的 cookie 由启动 token/凭据派生），而且此刻实例只走到「端口已
+        # listen、路由还没挂完」的阶段 —— 直接拿缓存 cookie 转发出去，首页会
+        # 得到 404（实测 4.0s 窗口），用户看到冷启动第一屏 404。
+        # 丢掉缓存后，随后的 ensure_session 会走 bootstrap_session 的轮询，
+        # 一直等到真的换到 Set-Cookie（实测 8.2s）为止。
+        self.sessions.pop(username, None)
+        self.instance_cookie_sets.pop(username, None)
         await self.seed_client_shim(username)
         return port
 
