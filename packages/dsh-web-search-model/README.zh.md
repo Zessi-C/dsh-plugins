@@ -92,8 +92,8 @@ python3 check-drift.py
 | 检查项 | 失败后果 |
 |---|---|
 | `plugins.item` 仍是 list 槽 | 顶替失效：出现两张卡，或注册抛错 |
-| `priority` 仍写入 entry 记录 | 同上 |
-| `entriesOfSlot` 仍按 id 取每格第一个 | 同上 |
+| 注册座位仍会分配顶替用的 priority | 同上 |
+| `priority` 仍随 entry 存储、`entriesOfSlot` 仍按 id 取每格第一个 | 同上 |
 | 官方卡槽 id 仍是 `web-search` | 顶替目标移动 —— 出现两张卡 |
 | 官方卡 order 仍是 40 | 仅影响排序，无害 |
 | 上游没有本插件未渲染的新字段 | 上游新增的字段不会显示在你的卡上 |
@@ -106,10 +106,10 @@ python3 check-drift.py
 DSH_DS_PACKAGES=/path/to/@deepseek-ai python3 check-drift.py
 ```
 
-脚本找不到的包会报 `missing file`，对应那项检查不会执行。当前 dsh 版本把
-`dsh-client-ui-slots` 与 `dsh-client-ui-primitives` 只打进构建产物
-`dsh-web-frontend`，磁盘上没有独立的 `lib/`，所以这两项会报 `missing file`，其余检查
-照常通过。把这条消息理解为「本次安装未能检查」，而不是「发生了漂移」。
+脚本找不到的源会报 `skip missing file`，依赖它的检查不执行，其余检查照常决定退出码。
+当前 dsh 版本把槽核心打进构建产物 `dsh-web-frontend`，UI primitives 则根本没有独立的
+`lib/`，所以 primitives 那一项会报 `skip`。把这条消息理解为「本次安装未能检查」，
+而不是「发生了漂移」。
 
 **未覆盖的情况**：官方某个字段的**行为**变了（例如 `apiKeyEnv` 的解析规则），而
 字段 id 没变。脚本看不出来，只能人工 diff。

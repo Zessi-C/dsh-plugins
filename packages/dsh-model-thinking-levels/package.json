@@ -1,6 +1,6 @@
 {
   "name": "dsh-model-thinking-levels",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "private": true,
   "type": "module",
   "description": "Expose per-model thinking levels (reasoningEfforts) and manual model ordering inside the Models settings card for a custom model API route.",

@@ -98,7 +98,12 @@ window.__ModuleLoader__.load({
 		 * wins the cell and the shipped card does not render.
 		 */
 		const SHADOWED_CARD_ID = "web-search";
-		const SHADOWED_CARD_ORDER = 40;
+		// Keep this equal to the shipped card's own `order` (dsh 0.2.1-rc.2: 20;
+		// it was 40 when this package took the cell). `order` is the position
+		// among every `plugins.item` registration — settings cards share that one
+		// sequence — so a stale value does not fail loudly: the card simply sorts
+		// somewhere upstream never put it. `check-drift.py` flags the mismatch.
+		const SHADOWED_CARD_ORDER = 20;
 
 		/** Dictionary namespace owned by this page. */
 		const NS = "settings.webSearchModel";

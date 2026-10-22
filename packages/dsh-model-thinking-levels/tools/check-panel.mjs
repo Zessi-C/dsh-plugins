@@ -169,9 +169,10 @@ function textOf(node) {
  * One panel instance over a mutable settings document.
  * @param options - the models to serve, whether the document is writable, and
  *   an optional probe answer (or a function returning one per call) to stand in
- *   for the Host half's gateway probe.
+ *   for the Host half's gateway probe, and an optional write behaviour (defaults
+ *   to an accepted write) to stand in for the shared form's mutate().
  */
-function createPanel({ models, writable = true, probe }) {
+function createPanel({ models, writable = true, probe, write } = {}) {
   const React = createReact();
   let captured = null;
   new Function('window', SOURCE)({ __ModuleLoader__: { load: (module) => { captured = module; } } });
@@ -227,7 +228,14 @@ function createPanel({ models, writable = true, probe }) {
         },
         load: async () => {},
       }),
-      get: () => ({ mutate: (ops) => { writes.push(ops); return Promise.resolve(true); } }),
+      // The shared form's write. It may accept, refuse, throw synchronously or
+      // reject; the panel must settle on a rendered status in every case.
+      get: () => ({
+        mutate: (ops) => {
+          writes.push(ops);
+          return typeof write === 'function' ? write(ops) : Promise.resolve(true);
+        },
+      }),
     },
     get: (name) => (name === 'connection' ? connection : undefined),
   };
@@ -268,6 +276,8 @@ function createPanel({ models, writable = true, probe }) {
     /** Each row's React key — the document index the row is addressed by. */
     keys: () => panel.rows().map((row) => row.props.key),
     rowAt: (at) => panel.rows()[at],
+    /** The status line's rendered text (the "saving"/"saved"/"unsaved" slot). */
+    statusText: () => textOf(elements(tree).find((node) => hasClass(node, 'dsh-tl-status'))),
     gripAt: (at) => elements(panel.rows()[at]).find((node) => hasClass(node, 'dsh-tl-grip') || hasClass(node, 'dsh-tl-grip-off')),
     save: () => elements(tree).find((node) => hasClass(node, 'dsh-tl-primary')),
     summary: () => elements(tree).find((node) => hasClass(node, 'dsh-tl-summary')),
@@ -407,6 +417,30 @@ async function main() {
   check('the written array carries the dragged order', same((written ?? []).map((model) => model.id), ['bravo', 'charlie', 'alpha']), JSON.stringify((written ?? []).map((model) => model.id)));
   check('every entry keeps its fields', (written ?? []).every((model) => model.contextWindow === 1000 && model.maxTokens === 100 && model.input?.[0] === 'text'));
   check('every entry keeps its declared levels', (written ?? []).every((model) => model.reasoningEfforts?.low === 'low' && model.reasoningEfforts?.high === 'high'));
+
+  // 3b. A write that FAILS must settle on a rendered status, never sit on
+  //     "saving" with the button disabled. The shared form's mutate() can
+  //     throw synchronously or reject (no connection, dropped request), and the
+  //     panel sets "saving" before it awaits the answer, so an escaping
+  //     rejection used to strand the panel: "saving" forever, change unsaved,
+  //     no way to retry. Each failure shape is covered separately.
+  const failureShapes = {
+    'rejects': () => Promise.reject(new Error('transport down')),
+    'throws synchronously': () => { throw new Error('no connection to the Host'); },
+    'answers false': () => Promise.resolve(false),
+  };
+  for (const [shape, write] of Object.entries(failureShapes)) {
+    const failing = createPanel({ models: [declaredModel('alpha'), declaredModel('bravo')], write });
+    await expand(failing);
+    await failing.fire(() => failing.gripAt(0), (node) => node.props.onKeyDown({ key: 'ArrowDown', preventDefault: () => {} }));
+    await failing.fire(() => failing.save(), (node) => node.props.onClick());
+    // The harness settles promise callbacks, so a stranded "saving" is visible.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await failing.render();
+    const status = failing.statusText();
+    check(`a write that ${shape} stops saying "saving"`, !/saving|\u4fdd\u5b58\u4e2d/i.test(status), JSON.stringify(status));
+    check(`a write that ${shape} leaves the change unsaved, so it can be retried`, status.length > 0 && failing.save().props.disabled === false, JSON.stringify(status));
+  }
 
   // 4. Dragging back to the document's own order is not a change.
   const back = createPanel({ models: [declaredModel('alpha'), declaredModel('bravo'), declaredModel('charlie')] });

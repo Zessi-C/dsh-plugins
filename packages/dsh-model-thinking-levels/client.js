@@ -416,7 +416,28 @@ window.__ModuleLoader__.load({
         t,
         snapshot: () => mirror.getSnapshot(),
         subscribe: (listener) => mirror.subscribe(listener),
-        write: (ops) => form.mutate(ops),
+        /**
+         * Apply one write through the shared form, and always resolve.
+         *
+         * `mutate` answers `true` for an accepted write and `false` for a
+         * refused one, but it may also throw synchronously or reject — no
+         * connection to the Host, a dropped request, a revision conflict that
+         * the queue surfaces as an exception. The caller sets a "saving" status
+         * before it awaits this, so a rejection that escaped would leave the
+         * panel saying "saving" forever with the change unsaved and the button
+         * disabled. Like `probe`, this therefore never throws: a failure is a
+         * `false` answer, which the panel already renders as a failed save.
+         */
+        write: (ops) => {
+          try {
+            return Promise.resolve(form.mutate(ops)).then(
+              (accepted) => accepted === true,
+              () => false,
+            );
+          } catch {
+            return Promise.resolve(false);
+          }
+        },
         /** Ask the shared mirror for a fresh read; it answers with its own snapshot. */
         reload: () => {
           if (typeof mirror?.load !== 'function') return undefined;

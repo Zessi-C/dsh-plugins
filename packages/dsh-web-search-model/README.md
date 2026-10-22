@@ -107,8 +107,8 @@ The script re-reads every upstream contract this plugin depends on and reports
 | Check | What breaks if it fails |
 |---|---|
 | `plugins.item` is still a list slot | Shadowing stops working: two cards, or a registration error |
-| `priority` is still written into the entry record | Same |
-| `entriesOfSlot` still takes the first entry per id | Same |
+| The registration seat still assigns a shadowing priority | Same |
+| `priority` is still stored with the entry, and `entriesOfSlot` still takes the first entry per id | Same |
 | Official card slot id is still `web-search` | The shadowing target moved — two cards appear |
 | Official card order is still 40 | Ordering only, harmless |
 | Upstream has no field this plugin does not render | A new upstream field would not show on your card |
@@ -122,11 +122,11 @@ does not match your install:
 DSH_DS_PACKAGES=/path/to/@deepseek-ai python3 check-drift.py
 ```
 
-A package the script cannot find is reported as `missing file` and no check runs
-for it. Current dsh releases ship `dsh-client-ui-slots` and `dsh-client-ui-primitives`
-only inside the built `dsh-web-frontend` bundle, with no `lib/` on disk, so those
-two checks report `missing file` there and the rest still pass. Treat that message
-as "not checked in this install", not as drift.
+A source the script cannot find is reported as `skip missing file` and the
+checks that need it do not run; the others still decide the exit code. Current dsh
+releases keep the slot core inside the built `dsh-web-frontend` bundle and the
+UI primitives with no `lib/` on disk at all, so the primitives check reports
+`skip` there. Treat that message as "not checked in this install", not as drift.
 
 **Not covered:** a change to the *behaviour* of an official field whose id stayed
 the same (for example, how `apiKeyEnv` is resolved). The script cannot see that;
