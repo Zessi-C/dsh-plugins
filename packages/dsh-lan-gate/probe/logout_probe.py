@@ -6,7 +6,7 @@
   A. GET /__portal/logout?next=login  → 303 到登录页，清门户 cookie + 清上游 dsh-auth cookie
   B. GET /__portal/logout             → 303 到 /（保持脚本/外部链接的旧行为）
   C. POST /__portal/logout            → 同上（旧入口不回归）
-  D. /__portal/login?logout=1         → 登录页出现「已经退出登录」提示
+  D. /__portal/login?logout=1         → 登录页出现「已退出登录」提示
   E. 没登录时访问 /__portal/login      → 没有那条提示
 """
 import asyncio
@@ -172,11 +172,11 @@ async def main():
     # D. 退出后的登录页提示
     status, headers, body = await request(portal_port, "GET", "/__portal/login?logout=1")
     check("D1 登录页 200", status == 200, f"status={status}")
-    check("D2 出现「已经退出登录」提示", "已经退出登录" in body.decode("utf-8"), "")
+    check("D2 出现「已退出登录」提示", "已退出登录" in body.decode("utf-8"), "")
 
     # E. 普通打开登录页不带提示
     status, headers, body = await request(portal_port, "GET", "/__portal/login")
-    check("E 普通登录页没有退出提示", "已经退出登录" not in body.decode("utf-8"), "")
+    check("E 普通登录页没有退出提示", "已退出登录" not in body.decode("utf-8"), "")
 
     # G. 页面响应一律 no-store（服务端强制，不依赖任何自定义请求头）
     #    —— 导航/刷新时浏览器不会给顶层文档请求带自定义头，所以判据只能是服务端。
