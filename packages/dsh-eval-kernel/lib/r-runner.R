@@ -40,6 +40,11 @@ if (length(commandArgs(trailingOnly = TRUE)) < 1L) {
 STDIN_CON <- file(commandArgs(trailingOnly = TRUE)[1], open = "r", blocking = TRUE)
 
 emit_frame <- function(frame) {
+  # A cell may have run `sink()` itself, which leaves stdout() redirected: the
+  # frame would be written into a file instead of the host, which then waits
+  # for an answer that never comes and finally kills the interpreter. Frames
+  # are re-anchored to the stream captured at boot before every write.
+  try(stdout(FRAME_CON), silent = TRUE)
   if (requireNamespace("jsonlite", quietly = TRUE)) {
     payload <- jsonlite::toJSON(frame, auto_unbox = TRUE, null = "null", na = "null")
   } else {
@@ -47,6 +52,25 @@ emit_frame <- function(frame) {
   }
   cat(payload, "\n", sep = "", file = FRAME_CON)
   flush(FRAME_CON)
+}
+
+# Undo any stdout redirection a finished cell left behind. `sink.number()`
+# counts the connection stack R itself keeps open; every extra level came from
+# the cell. The kernel's own capture always closes its sink before this runs.
+restore_stdout <- function() {
+  repeat {
+    depth <- tryCatch(sink.number(), error = function(e) 0L)
+    if (depth <= 1L) break
+    ok <- tryCatch(
+      {
+        sink()
+        TRUE
+      },
+      error = function(e) FALSE,
+      warning = function(w) FALSE
+    )
+    if (!ok) break
+  }
 }
 
 # Base R has no JSON writer, so a minimal encoder covers hosts without jsonlite.
@@ -143,6 +167,7 @@ repeat {
   )
   sink()
   close(sink_handle)
+  restore_stdout()
 
   captured <- tryCatch(paste(captured_lines, collapse = "\n"), error = function(e) "")
 

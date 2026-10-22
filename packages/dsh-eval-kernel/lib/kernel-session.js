@@ -26,11 +26,40 @@
 
 import { spawn, execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { Socket } from 'node:net'
 import { mkdtempSync, rmSync, createWriteStream } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const MAX_PENDING_OUTPUT = 4 * 1024 * 1024
+
+/**
+ * Teach a child-stream's writable side to report backpressure.
+ *
+ * A stdio pipe to a spawned process is a libuv stream: its `write()` hands the
+ * bytes to the kernel and reports `false` every time, and `writableLength`
+ * stays at 0. Node's event-loop write queue is only reachable through a
+ * `net.Socket`, so the same descriptor is also handed to one. When a cell's
+ * code does not fit in the pipe buffer, the writer then waits for the child
+ * to drain it instead of piling the rest into the host's memory.
+ * @param stream - the child's stdin (a pipe to write to), or its frame pipe.
+ * @param fd - the descriptor that stream writes to.
+ * @returns the socket now carrying this stream's writes, or null when the
+ *   stream has no descriptor to adopt (then writes stay unbounded).
+ */
+function applyBackpressure(stream, fd = stream.fd) {
+  if (fd === undefined || fd === null) return null
+  const socket = new Socket({ fd, readable: false, writable: true })
+  // The wrapped stream owns the error surface; an unhandled 'error' on the
+  // socket would take the host process down with it.
+  socket.on('error', () => {})
+  stream._write = (chunk, encoding, callback) => socket.write(chunk, callback)
+  stream._final = (callback) => {
+    socket.end()
+    callback()
+  }
+  return socket
+}
 
 export class KernelSession {
   constructor({ language, command, args = [], cwd, env, inputMode = 'stdin', sandbox = null, scratchDir = null }) {
@@ -64,6 +93,11 @@ export class KernelSession {
     this.fifoDir = null
     this.fifoPath = null
     this.fifoStream = null
+    // One-shot recovery after a cell was lost on the write side (aborted or
+    // timed out while its frame was still being written). The next call gets a
+    // fresh interpreter instead of writing into a stream whose callback queue
+    // never drains.
+    this.restartOnNextCell = false
   }
 
   /** Stream and exit handlers are installed exactly once per process. */
@@ -105,6 +139,13 @@ export class KernelSession {
       this.child = child
       this.state = 'starting'
 
+      if (stdinSpec === 'pipe' && child.stdin) {
+        // Frames go to the child through this stream. Without the socket the
+        // host cannot tell that the child stopped reading, and a large cell
+        // would be buffered in the host's memory instead.
+        this.stdinSocket = applyBackpressure(child.stdin, child.stdin._handle?.fd)
+      }
+
       if (this.inputMode === 'fifo') {
         // Both ends open asynchronously: the child blocks opening its read end
         // until this write end exists, and Node's stream resolves once it does.
@@ -115,6 +156,11 @@ export class KernelSession {
           this.fifoStream.on('error', (error) => {
             this.state = 'dead'
             this.fatalMessage = `frame channel failed: ${error.message}`
+          })
+          // The fifo's directory may still be being created, so the stream has
+          // no descriptor yet; the socket is attached once it opens.
+          this.fifoStream.once('open', (fd) => {
+            this.fifoSocket = applyBackpressure(this.fifoStream, fd)
           })
         } catch (error) {
           fail(error)
@@ -172,7 +218,12 @@ export class KernelSession {
       })
       child.stderr.setEncoding('utf8')
       child.stderr.on('data', (chunk) => {
-        if (this.collector) this.collector.stderr += chunk
+        // The interpreter's own diagnostics — a Python SyntaxWarning, R's
+        // `message()`, a segfault note — arrive here rather than as frames.
+        // Dropping them on the floor is what made a failing cell look like a
+        // silent one, so they are folded into the cell's stderr and capped
+        // like streamed output.
+        this.#append('stderr', chunk)
       })
 
       const onAbort = () => {
@@ -231,6 +282,10 @@ export class KernelSession {
   #append(kind, data) {
     const collector = this.collector
     if (!collector) return
+    this.#appendTo(collector, kind, data)
+  }
+
+  #appendTo(collector, kind, data) {
     const next = collector[kind] + data
     if (next.length <= MAX_PENDING_OUTPUT) {
       collector[kind] = next
@@ -257,13 +312,22 @@ export class KernelSession {
       case 'done':
       case 'error': {
         const entry = this.pending.get(frame.id)
-        if (!entry) return
+        if (!entry) {
+          // An answer to a cell the host gave up on: nobody is waiting for it,
+          // and kill() may already have moved on to a different interpreter.
+          return
+        }
         this.pending.delete(frame.id)
         if (typeof frame.count === 'number') this.executionCount = frame.count
         else if (frame.type === 'done') this.executionCount += 1
         if (frame.type === 'done') {
           entry.resolve(this.collector)
         } else {
+          // The child already sent the formatted traceback as stderr frames;
+          // a Python detail line carries no trailing newline on its own.
+          if (this.collector === entry.collector && this.collector.stderr && !this.collector.stderr.endsWith('\n')) {
+            this.collector.stderr += '\n'
+          }
           // Reject on a later turn. This frame arrives inside the child's
           // 'data' callback, and rejecting there would surface as an unhandled
           // rejection whenever the caller has not yet attached its handler --
@@ -307,43 +371,58 @@ export class KernelSession {
       if (this.state === 'dead') {
         throw new Error(this.fatalMessage ?? 'interpreter is not running')
       }
+      if (this.restartOnNextCell) {
+        // The previous cell was abandoned while its frame was still being
+        // written; this stream can no longer be trusted to drain, so the
+        // interpreter is replaced before anything is sent.
+        await this.kill('recovering from an interrupted cell').catch(() => {})
+        throw new Error('interpreter was restarted because the previous cell did not finish cleanly; run the cell again')
+      }
       await this.start(signal)
       if (signal?.aborted) throw new Error('cell aborted before it started')
 
       const id = randomUUID()
-      this.collector = { stdout: '', stderr: '', dropped: { stdout: 0, stderr: 0 } }
+      this.collector = { cellId: id, stdout: '', stderr: '', dropped: { stdout: 0, stderr: 0 } }
       const collector = this.collector
 
       const result = new Promise((resolve, reject) => {
-        this.pending.set(id, { resolve, reject })
+        this.pending.set(id, { resolve, reject, collector })
       })
 
-      const abortHandler = () => {
+      // Set once the frame has been handed over in full. Before that point
+      // there is nothing to interrupt, and killing the child would strand the
+      // partially written line in a dead process: the interpreter itself is
+      // fine and its variables must survive an abort.
+      let dispatched = false
+      const abandon = (error, reason) => {
         const entry = this.pending.get(id)
         if (entry) {
           this.pending.delete(id)
-          entry.reject(new Error('cell aborted'))
+          entry.reject(error)
+        }
+        if (!dispatched) {
+          // The frame may be half written, or not written at all. Runaway
+          // writes are caught by the event-loop write queue, so dropping the
+          // cell here means the stream can be left mid-write — only a new
+          // process restores a known state.
+          this.restartOnNextCell = this.writeQueueFull()
         }
         // A wedged interpreter cannot be trusted for the next cell; only a
         // fresh process restores a known state.
-        this.kill('aborted').catch(() => {})
+        this.kill(reason).catch(() => {})
       }
+
+      const abortHandler = () => abandon(new Error('cell aborted'), 'aborted')
       if (signal) signal.addEventListener('abort', abortHandler, { once: true })
 
       let timer
       if (timeoutMs && timeoutMs > 0) {
-        timer = setTimeout(() => {
-          const entry = this.pending.get(id)
-          if (entry) {
-            this.pending.delete(id)
-            entry.reject(new Error(`cell timed out after ${timeoutMs}ms`))
-          }
-          this.kill('timeout').catch(() => {})
-        }, timeoutMs)
+        timer = setTimeout(() => abandon(new Error(`cell timed out after ${timeoutMs}ms`), 'timeout'), timeoutMs)
       }
 
       try {
         if (!this.write({ id, code })) throw new Error('interpreter is not accepting input')
+        dispatched = true
         await result
         return {
           stdout: clamp(withDropNote(collector.stdout, collector.dropped.stdout)),
@@ -353,19 +432,37 @@ export class KernelSession {
       } finally {
         if (timer) clearTimeout(timer)
         if (signal) signal.removeEventListener('abort', abortHandler)
+        // The collector may have moved on: a replaced interpreter tags its
+        // cells' frames with their own collector, so only ours is released.
         if (this.collector === collector) this.collector = null
       }
     }
 
-    // Chain on the queue so overlapping calls run one after another.
+    // Chain on the queue so overlapping calls run one after another. The tail
+    // must swallow both outcomes: an unhandled rejection here is a host
+    // process death, not just a failed cell.
     const next = this.queue.then(run)
-    this.queue = next.catch(() => {})
+    this.queue = next.then(
+      () => {},
+      () => {},
+    )
     return next
+  }
+
+  /** Whether the write side still holds bytes the child has not taken yet. */
+  writeQueueFull() {
+    const socket = this.stdinSocket ?? this.fifoSocket
+    if (socket && socket.writableLength > 0) return true
+    for (const stream of [this.child?.stdin, this.fifoStream]) {
+      if (stream && stream.writableLength > 0) return true
+    }
+    return false
   }
 
   async kill(reason = 'closed') {
     this.state = 'dead'
     this.killReason = reason
+    this.restartOnNextCell = false
     // Release what the dead process was still parked on. Without this a killed
     // interpreter leaves its last partial line and cell output reachable from
     // the map entry until the entry itself is dropped.
@@ -412,6 +509,11 @@ export class KernelSession {
       this.fifoStream?.end()
     } catch {}
     this.fifoStream = null
+    this.fifoSocket = null
+    // The socket owns a descriptor of its own; leaving it open keeps the
+    // host's event loop alive after the interpreter is gone.
+    this.stdinSocket?.destroy()
+    this.stdinSocket = null
     for (const dir of [this.fifoDir, this.scratchDir]) {
       if (!dir) continue
       try {

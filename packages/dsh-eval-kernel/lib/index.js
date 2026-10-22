@@ -292,10 +292,15 @@ export function apply(ctx, config) {
       const handle = setInterval(() => {
         const now = Date.now()
         for (const [key, session] of sessions) {
+          // `lastUsedAt` is refreshed when a cell finishes, so a long-running
+          // one looks idle the whole time it runs. Killing it here would
+          // destroy exactly the state the tool exists to preserve, so a
+          // session with a cell in flight is skipped until the cell settles.
+          if (session.pending.size > 0) continue
           if (session.lastUsedAt && now - session.lastUsedAt > config.idleTimeoutMs) {
             reclaimed.add(key)
-            session.kill('idle').catch(() => {})
             sessions.delete(key)
+            void session.kill('idle').catch(() => {})
           }
         }
       }, Math.min(config.idleTimeoutMs, 60_000))
@@ -319,7 +324,8 @@ function createEvalTool(ctx, config, sessions, reclaimed) {
       'computation; use `bash` for shell work. ' +
       'The interpreter runs under the session file-effect policy, so a cell cannot write outside the ' +
       'workspace (use `bash` when you need a shell). ' +
-      'A failing cell returns its traceback and leaves the interpreter alive. ' +
+      'A failing cell returns its traceback and leaves the interpreter alive; a cell that times out or is ' +
+      'cancelled restarts the interpreter, so its variables are gone. ' +
       'Pass `reset: true` to discard the interpreter and start clean.',
     // The parameter root is an implicit object; each property is a
     // ValueSchemaSpec and requiredness is a per-property annotation.
@@ -354,12 +360,27 @@ function createEvalTool(ctx, config, sessions, reclaimed) {
 
       const { session, restartReason } = await acquireSession(ctx, config, sessions, language, exec.agent, policy, reclaimed)
       session.lastUsedAt = Date.now()
-      const timeoutMs = resolveTimeout(args.timeoutMs, config.timeoutMs)
+      const requestedTimeout = resolveTimeout(args.timeoutMs, config.timeoutMs)
+      // `run_cell` carries the real budget in its own schema so the model can
+      // see it; the host's per-tool deadline is derived from the same config.
+      // The kernel's deadline must stay strictly inside it: the inner kill is
+      // the one that reports "cell timed out", while the outer one only
+      // rejects the call and leaves the interpreter running.
+      const timeoutMs = exec.timeoutMs === undefined ? requestedTimeout : Math.min(requestedTimeout, exec.timeoutMs)
 
       const started = Date.now()
       let outcome
       try {
         outcome = await session.execute(args.code, { signal: exec.signal, timeoutMs })
+      } catch (error) {
+        // The tool contract ("a failing cell returns its traceback") cannot be
+        // kept when the call itself is cancelled or runs out of time: the
+        // interpreter is replaced and the variables are gone. Saying so is
+        // better than a bare rejection the model may read as "the cell ran".
+        if (exec.signal?.aborted) {
+          throw new Error(`run_cell: the cell was cancelled; the interpreter was restarted and earlier variables are gone (${error.message})`)
+        }
+        throw error
       } finally {
         // Refresh on failure too: a cell that just errored is still a live
         // interpreter the next call will reuse, so idleness must restart here

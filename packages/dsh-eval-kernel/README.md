@@ -80,9 +80,10 @@ Point `rBinary` at a conda environment's `Rscript` when a project needs a specif
 
 An interpreter is a process holding whatever the last cell put in it, so its lifetime is managed explicitly:
 
-- **Output is capped while it streams.** A `print` in a loop is the easy way to make the host hold gigabytes. Each stream keeps 4 MiB (head and tail) and counts what it dropped, so a runaway print costs a fixed budget.
-- **Idle interpreters are reclaimed.** After `idleTimeoutMs` the process is killed and its memory returned. The next call starts a fresh one and says so in stderr rather than silently handing back an empty namespace.
-- **A dead interpreter is replaced.** Crashed, aborted or timed-out processes are restarted on the next call instead of poisoning every later cell.
+- **Output is capped while it streams.** A `print` in a loop is the easy way to make the host hold gigabytes. Each stream keeps 4 MiB (head and tail) and counts what it dropped, so a runaway print costs a fixed budget. The interpreter's own stderr (a Python warning, R's `message()`) is folded into the same cell stderr instead of being discarded.
+- **A slow reader is waited for, not buffered.** A cell frame that does not fit in the pipe buffer now makes the host wait for the interpreter to drain it, instead of queueing the rest in the host's memory.
+- **Idle interpreters are reclaimed.** After `idleTimeoutMs` the process is killed and its memory returned. The next call starts a fresh one and says so in stderr rather than silently handing back an empty namespace. A session with a cell still running is never reclaimed: the sweep only looks at interpreters that finished their last cell that long ago.
+- **A dead interpreter is replaced.** Crashed, aborted or timed-out processes are restarted on the next call instead of poisoning every later cell. A timeout or a cancelled call therefore loses the interpreter's variables, and `run_cell` says so in its error rather than reporting a bare rejection.
 - **`reset: true`** discards the interpreter by request, which is the way to drop a large object you no longer need.
 - **Teardown releases the pipes.** A failed start closes its frame pipe and removes any directory it created; an unclosed pipe would keep the host's event loop alive forever.
 
@@ -90,7 +91,7 @@ An interpreter is a process holding whatever the last cell put in it, so its lif
 
 - Each interpreter is a child process spoken to over NDJSON. The host writes one JSON object per line; the child answers with typed frames (`stdout`, `stderr`, `error`, `done`).
 - **R needs a named pipe.** `Rscript` on Linux cannot reopen `/dev/stdin`, `/dev/fd/0` or `/proc/self/fd/0` when its stdin is an anonymous pipe, so the R child reads a per-session FIFO created in a temp directory and removed on teardown.
-- **R captures output in memory.** Cell output is redirected with `sink()` into a `textConnection` rather than a temp file, so the kernel still works when the policy grants no writable directory. Frames are written through a connection handle captured before any `sink()`, so the two do not interfere.
+- **R captures output in memory.** Cell output is redirected with `sink()` into a `textConnection` rather than a temp file, so the kernel still works when the policy grants no writable directory. Frames are written through a connection handle captured before any `sink()`, so the two do not interfere; a cell that leaves its own `sink()` open has it unwound before the next frame, so one careless cell cannot swallow every later answer.
 - **Python state is explicit.** Cells run via `compile()`/`exec()` against one namespace dict — no IPython dependency, so any interpreter works.
 - **JavaScript uses a proxy scope.** Declarations are rewritten to plain assignments and resolved through a `with` block over a proxy that answers `has` only for names the kernel already owns, which keeps globals like `console` and `Error` visible.
 - The tool is declared through the harness's `defineTool`, which compiles the schema DSL into the standard JSON Schema an OpenAI-compatible endpoint expects. Hand-building the definition leaves `parameters` as a bare property map and the endpoint rejects it with `invalid function call parameters` (`upstream_code: 11129`).
