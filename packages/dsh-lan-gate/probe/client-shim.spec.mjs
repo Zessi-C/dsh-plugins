@@ -24,11 +24,31 @@ const SRC = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8');
 const V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function makeSandbox({ host = '100.64.0.1', withGetRandomValues = true,
-                       withLoader = true, withBody = true, injectedHosts = null } = {}) {
+                       withLoader = true, withBody = true, injectedHosts = null,
+                       withReact = true } = {}) {
   const modules = {};
+  // `client.js` requires `react` at module scope for the sign-out button it
+  // registers into `sidebar.footer.action` (v0.14.0). The real loader resolves
+  // it from the page's module registry; this sandbox stands in for that. A
+  // minimal stand-in is enough: the checks never render the button, they only
+  // need the module to evaluate. `withReact: false` emulates a loader that
+  // cannot resolve it, to prove Layer 1 survives that too.
+  const reactStub = {
+    createElement: (type, props, ...children) => ({ type, props: { ...(props ?? {}), children }, __react: true }),
+    useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}],
+    useEffect: () => {},
+    useRef: (initial) => ({ current: initial }),
+  };
+  const resolve = (id) => {
+    if (id === 'react') {
+      if (!withReact) throw new Error('Cannot find module \'react\'');
+      return reactStub;
+    }
+    return modules[id];
+  };
   const loader = {
     load(def) {
-      const exportsObj = def.factory((id) => modules[id]);
+      const exportsObj = def.factory(resolve);
       modules[def.id] = exportsObj;
       return exportsObj;
     },
@@ -43,12 +63,21 @@ function makeSandbox({ host = '100.64.0.1', withGetRandomValues = true,
     Error,
     setInterval: () => 0,
     clearInterval: () => {},
+    // The sign-out mount waits on a probe timeout (v0.14.0); the sandbox timer
+    // never fires, so the checks see the immediate path only.
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+    fetch: () => Promise.resolve({ ok: false, headers: { get: () => null }, json: async () => ({}) }),
+    localStorage: { getItem: () => null, setItem: () => {} },
     crypto: withGetRandomValues
       ? { getRandomValues: (arr) => { for (let i = 0; i < arr.length; i++) arr[i] = (i * 37) % 256; return arr; } }
       : {},
     navigator: {},
     document: {
-      createElement: () => ({ style: {}, setAttribute() {}, select() {}, setSelectionRange() {}, value: '' }),
+      createElement: () => ({ style: {}, setAttribute() {}, select() {}, setSelectionRange() {}, value: '', remove() {} }),
+      // The sign-out stylesheet (v0.14.0) is installed through these three.
+      getElementById: () => null,
+      head: { appendChild() {} },
       body: withBody ? { appendChild() {}, removeChild() {} } : null,
       execCommand: () => true,
     },
@@ -144,6 +173,20 @@ check('loader 契约缺失时第一层兜底仍生效', () => {
   assert.equal(d.layer1Ran, true, '第一层必须仍然执行');
   assert.equal(d.randomUUIDPatched, true);
   assert.match(sandbox.crypto.randomUUID(), V4);
+});
+
+// 7b) React 解析失败 → 第一层仍生效
+//     v0.14.0 让 client.js 在模块作用域就要 `require('react')`（退出按钮）。
+//     它是模块求值的一部分：只要那次 require 抛出去，整个文件都不执行，
+//     第一层的 crypto / clipboard 兜底就一起没了 —— 而第一层恰恰是「不押注
+//     dsh 内部契约」的那一半。所以那一半必须与 React 解耦。
+check('loader 解析不到 react 时第一层兜底仍生效', () => {
+  const { sandbox } = makeSandbox({ withReact: false });
+  const d = sandbox.__DSH_LAN_GATE__;
+  assert.equal(d.layer1Ran, true, '第一层必须仍然执行');
+  assert.equal(d.randomUUIDPatched, true);
+  assert.match(sandbox.crypto.randomUUID(), V4);
+  assert.equal(d.clipboardPatched, true, 'clipboard 兜底不应随 React 一起丢');
 });
 
 // 8) IIFE：不泄漏内部符号

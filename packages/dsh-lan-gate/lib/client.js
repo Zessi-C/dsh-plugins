@@ -292,8 +292,33 @@
       const PORTAL_PROBE_TIMEOUT_MS = 5000;
       const SIGN_OUT_STYLE_ID = 'dsh-lan-gate-signout';
 
-      const React = require('react');
-      const h = React.createElement;
+      /* ── React 取用：延迟且受保护 ──────────────────────────────────
+       * v0.14.0 曾在这里直接 `const React = require('react')`。它一旦抛
+       * （loader 的模块表里没有 react、或上游改了 require 契约），整个 factory
+       * 就地中止 —— 模块连 evaluate 都做不到。那样丢掉的不是只有这个按钮：
+       * 第一层（crypto/clipboard 兜底）虽然在本文件顶层已经执行过，但
+       * apply()/trustOrigin() 全在这个 factory 里，isLoopback 改写会一起失效，
+       * 设置页又变回 unavailable —— 正好是本插件存在的理由。
+       *
+       * 所以：取不到 React 就把「按钮」这一路整体降级（warn + 不注册），
+       * 其余部分照常工作。只有真正要挂按钮时才去取，取到就用，行为不变。
+       */
+      let ReactMissingWarned = false;
+
+      function acquireReact(requireFn) {
+        if (typeof requireFn !== 'function') return null;
+        try {
+          const mod = requireFn('react');
+          return mod && typeof mod.createElement === 'function' ? mod : null;
+        } catch (e) {
+          if (!ReactMissingWarned) {
+            ReactMissingWarned = true;
+            warn('取不到 react（' + String(e && e.message) + '）—— 「退出登录」按钮不挂载；'
+              + 'isLoopback 改写与 crypto/clipboard 兜底不受影响。');
+          }
+          return null;
+        }
+      }
 
       /** 本地化的界面文案；键集合以 zh 为准，en 必须一一对应。 */
       const DICTS = {
@@ -485,15 +510,27 @@
             if (verdict.reachable !== true) {
               // 拿到响应了但没拿到答案（非 2xx、或 body 不是门户的 JSON）：
               // dsh 直连实例上 /__portal/me 是 404 → 明确「不在门户后面」。
-              // 2xx 却不是门户的 JSON（被别的中间件接住）→ 当作「在」更安全。
               diag.portalEvidence = 'status:' + verdict.status;
-              finish(verdict.status !== 404);
+              if (verdict.status === 404) { finish(false); return; }
+              // 不是 404 却答不出 JSON：最典型的是「上游 catch-all 把索引页当 200
+              // text/html 返回」（浏览器里 Response.json() 因此 reject），也可能是
+              // 别人的登录 302。这只能说明「有东西在前面」，不能证明是门户 ——
+              // 尤其不能证明 /__portal/logout 存在。所以返回 'unverified'：按钮
+              // 仍然出现，但点的时候先再问一次，问不到才按直连实例退出。
+              // 曾经这里直接 finish(true)：直连实例上点「退出登录」会被带到
+              // /__portal/logout，一个根本不存在的路由。
+              finish('unverified');
               return;
             }
-            diag.portalEvidence = 'me:' + (verdict.ok ? 'user' : 'anon');
-            // 回环设备上的直连实例：没有任何反代特征 → 不是门户。
+            // 同一把尺子：带 X-Dsh-Portal 的 JSON 才算「已确认」；不带头的老门户
+            // （或缺头）只算「也许」，交给未验证路径，不在点击时直接跳走。
+            diag.portalEvidence = 'me:' + (verdict.ok ? 'user' : 'anon')
+              + (verdict.isPortalJson ? '+hdr' : '');
             const host = String(safe(function () { return globalThis.location.hostname; }) || '');
+            // 回环 + Host 没被改写：直连实例，不是门户。
             if (!verdict.viaHost && isLoopbackHost(host)) { finish(false); return; }
+            // 有 Host 改写但没门户标记头（旧版门户）：存在，但仍算未验证。
+            if (!verdict.isPortalJson) { finish('unverified'); return; }
             // 用公开域名访问时，Host 也被改写成后端回环端口，和页面 origin 的域名
             // 天然对不上 —— 这里只要求「有 X-Dsh-Portal-Host 就说明被反代过」，
             // 但「Host 等于页面 origin」说明前面根本没有反代，不算门户。
@@ -531,8 +568,8 @@
        * 所以真正兜底的是门户的 no-store，见 declareCachedPage）。
        */
       function guardRestoredPage() {
-        if (typeof globalThis.addEventListener !== 'function') return;
-        globalThis.addEventListener('pageshow', function (event) {
+        if (typeof globalThis.addEventListener !== 'function') return function () {};
+        const onPageShow = function (event) {
           if (!event || event.persisted !== true) return;
           if (storageGet(PORTAL_MARK_KEY) !== '1') return;
           safe(function () {
@@ -549,7 +586,13 @@
                 }
               }, function () {});
           });
-        });
+        };
+        globalThis.addEventListener('pageshow', onPageShow);
+        // 返回卸载函数：客户端插件可以被热替换/停用，监听器挂在 window 上不属于
+        // 任何 ctx，不主动摘掉就会一直留着（下次 pageshow 还会再问一次门户）。
+        return function () {
+          safe(function () { globalThis.removeEventListener('pageshow', onPageShow); });
+        };
       }
 
       /**
@@ -566,14 +609,21 @@
       }
 
       function SignOutButton(props) {
-        if (props.__expand) return renderSignOut(props.t, 'idle', props.wide !== false, props.unverified);
+        const h = props.__h;
+        if (props.__expand) return renderSignOut(props.t, 'idle', props.wide !== false, props.unverified, h);
         return h(SignOutInner, props);
       }
 
       /** 渲染按钮本体；拆出来是因为下面要提前返回，而 hooks 不能写在条件分支之后。 */
       function SignOutInner(props) {
-        const [phase, setPhase] = React.useState('idle');
-        return renderSignOut(props.t, phase, props.wide !== false, props.unverified);
+        const React = props.__react;
+        const h = props.__h;
+        // 极少数情况下 React 在但 useState 不在（上游改了导出形状）：退回无状态的
+        // 静态渲染，按钮仍可用，只是不再有 busy/failed 文案。渲染期抛异常会炸掉
+        // 整个侧边栏，代价远大于少两个文案状态。
+        const [phase, setPhase] = typeof React.useState === 'function'
+          ? React.useState('idle') : ['idle', function () {}];
+        return renderSignOut(props.t, phase, props.wide !== false, props.unverified, h);
       }
 
 
@@ -642,19 +692,23 @@
           goSignOut();
           return Promise.resolve(true);
         }
-        return portalProbe().then(function (yes) {
-          if (yes) {
-            storageSet(PORTAL_MARK_KEY, '1');
-            goSignOut();
+        return portalProbe().then(function (verdict) {
+          // 判定只有三态：true = 确认在门户后面；'unverified' = 到得了 /__portal/me
+          // 但没拿到门户标记头（可能是老门户，也可能只是上游的 catch-all）；
+          // 其余（false）= 明确的 dsh 直连实例。
+          // 前两态都说明「前面有东西接着请求」，照旧跳门户登出地址；只有 false 才
+          // 走本地清 cookie —— 否则直连实例上点一下就会被带到不存在的路由。
+          if (verdict === false) {
+            signOutLocal();
             return true;
           }
-          // 不是门户：这是直连实例，退出 = 结束本浏览器里的 dsh 会话。
-          signOutLocal();
+          storageSet(PORTAL_MARK_KEY, '1');
+          goSignOut();
           return true;
         });
       }
 
-      function renderSignOut(t, phase, wide, unverified) {
+      function renderSignOut(t, phase, wide, unverified, h) {
         const onClick = function (event) {
           try { event.preventDefault(); event.stopPropagation(); } catch (_) {}
           if (phase !== 'idle') return;
@@ -714,6 +768,21 @@
         return decide.then(function (yes) {
           diag.portal = yes;
           diag.portalSource = knownPortal === true ? 'mark' : 'probe';
+          // 按钮要 React 才能渲染：取不到就跳过挂载（warn 已在 acquireReact 里留声），
+          // 其余行为——localStorage 标记、门户账号诊断——照做，方便排查。
+          const ReactImpl = acquireReact(require);
+          const h = ReactImpl ? ReactImpl.createElement : null;
+          if (!ReactImpl) {
+            diag.logoutRegistered = 'no-react';
+            safe(function () {
+              fetch('/__portal/me', { credentials: 'same-origin', cache: 'no-store' })
+                .then(function (res) { return res.json(); })
+                .then(function (body) {
+                  if (body && body.user) { diag.portalUser = body.user; }
+                }, function () {});
+            });
+            return;
+          }
           const dict = safe(function () { return pickDict(ctx.locale); }) || defaultDict();
           const t = function (key) { return dict[key] || key; };
           safe(function () {
@@ -727,12 +796,14 @@
               id: 'lan-gate-signout',
               order: 50,
             }, function (props) {
-              return h(SignOutButton, { wide: props.wide, t: t, unverified: yes !== true });
+              return h(SignOutButton, {
+                wide: props.wide, t: t, unverified: yes !== true, __react: ReactImpl, __h: h,
+              });
             });
           };
           if (typeof ctx.slots.inject === 'function') ctx.slots.inject('sidebar.footer.action', register);
           else register();
-          diag.logoutRegistered = yes === true ? true : 'unverified';
+          diag.logoutRegistered = yes === true ? true : String(yes);
           // 顺手记下当前门户账号，排查「按钮点的到底是谁」时有用。
           safe(function () {
             fetch('/__portal/me', { credentials: 'same-origin', cache: 'no-store' })
@@ -767,21 +838,27 @@
           mountSignOut(ctx, viaHeader);
         };
         const marked = safe(function () { return declareCachedPage(settle); }) === true;
-        safe(guardRestoredPage);
+        const removePageShowGuard = safe(guardRestoredPage);
         if (marked) settle(true);
         const fallback = setTimeout(function () { settle(false); }, PORTAL_PROBE_TIMEOUT_MS);
         if (fallback && typeof fallback.unref === 'function') fallback.unref();
+        // retry 定时器要先声明在这里：下面 ctx.effect 的清理函数必须能清掉它。
+        // （之前它是在 effect 之后才创建的局部变量，卸载时清不到，200ms 的轮询
+        // 会继续跑满 30 秒，并且在已销毁的 ctx 上反复调 trustOrigin。）
+        let retryTimer = null;
         if (ctx && typeof ctx.effect === 'function') {
           ctx.effect(function () {
             return function () {
               clearTimeout(fallback);
+              if (retryTimer) clearInterval(retryTimer);
+              if (typeof removePageShowGuard === 'function') removePageShowGuard();
               disposeStyle();
             };
           }, 'dsh-lan-gate: sign-out button');
         }
         if (trustOrigin(ctx)) return;
         let tries = 0;
-        const timer = setInterval(() => {
+        const timer = retryTimer = setInterval(() => {
           tries += 1;
           diag.tries = tries;
           if (trustOrigin(ctx) || tries >= 150) {
