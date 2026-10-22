@@ -17,8 +17,8 @@
 | 档位 | 默认路由 | 工具 | 定位 |
 |---|---|---|---|
 | `fast` | `agent2cli/deepseek-v4.1-flash` | 完整工作工具集 | 机械、需求明确的工作 |
-| `good` | `agent2cli/Qwen3.8-Flash` | 完整工作工具集 | 设计、调试、需要判断的工作 |
-| `expert` | `cpa/gemini-3.8-flash-high` | 可读全部、可写新计划 | 难题咨询 |
+| `good` | `cpa/gemini-3.8-flash-high` | 完整工作工具集 | 设计、调试、需要判断的工作 |
+| `expert` | `cpa/gpt-6.1-sol` | 可读全部、可写新计划 | 难题咨询 |
 
 director 只保留读取与派发类工具。`write`、`edit`、`bash`、`pwsh` 既从它的工具列表里移除，
 又由执行期 guard 拦截，所以它不会自己动手。

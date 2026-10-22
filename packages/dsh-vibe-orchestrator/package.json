@@ -1,6 +1,6 @@
 {
   "name": "dsh-vibe-orchestrator",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Vibe mode for DeepSeek Harness: the main conversation becomes a read-only orchestrator that routes work to fast, good, and expert subagents.",
   "type": "module",

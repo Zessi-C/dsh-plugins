@@ -55,12 +55,12 @@ export const Config = z.object({
   vibeFastModel: z.string().default('deepseek-v4.1-flash').volatile(),
   vibeFastEffort: z.string().volatile(),
 
-  vibeGoodProvider: z.string().default('agent2cli').volatile(),
-  vibeGoodModel: z.string().default('Qwen3.8-Flash').volatile(),
+  vibeGoodProvider: z.string().default('cpa').volatile(),
+  vibeGoodModel: z.string().default('gemini-3.8-flash-high').volatile(),
   vibeGoodEffort: z.string().volatile(),
 
   vibeExpertProvider: z.string().default('cpa').volatile(),
-  vibeExpertModel: z.string().default('gemini-3.8-flash-high').volatile(),
+  vibeExpertModel: z.string().default('gpt-6.1-sol').volatile(),
   vibeExpertEffort: z.string().volatile(),
 
 })
@@ -90,8 +90,8 @@ function routes(config) {
   })
   return {
     fast: route('Fast', 'agent2cli', 'deepseek-v4.1-flash'),
-    good: route('Good', 'agent2cli', 'Qwen3.8-Flash'),
-    expert: route('Expert', 'cpa', 'gemini-3.8-flash-high'),
+    good: route('Good', 'cpa', 'gemini-3.8-flash-high'),
+    expert: route('Expert', 'cpa', 'gpt-6.1-sol'),
   }
 }
 
@@ -134,7 +134,7 @@ function tierTool(tier, current, remember) {
         required: ['kind', 'subagentId', 'tier', 'model'],
       },
       render: (_args, value) => [
-        { type: 'text', text: `started ${value.tier} subagent ${value.subagentId} (${value.model})` },
+        { type: 'text', text: `started ${value?.tier ?? tier} subagent ${value?.subagentId ?? '?'} (${value?.model ?? '?'})` },
       ],
     },
     isConcurrencySafe: () => true,

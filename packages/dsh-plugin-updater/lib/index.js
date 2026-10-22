@@ -716,6 +716,9 @@ class Updater {
 
   /** Where a repository's raw files can be read at a commit, when the host offers it. */
   rawBase(url) {
+    // The caller passes the plain repository URL, never the credential-bearing
+    // form: withToken() writes `user:token@` into the authority, which used to
+    // stop this match and silently skip the tag fallback beside it.
     const match = /^https:\/\/([^/]+)\/([^/]+)\/(.+)$/.exec(url)
     if (match === null) return undefined
     const [, host, owner, repo] = match
@@ -781,7 +784,22 @@ class Updater {
     // from the package's release tag: `<package>-v<version>`. Publishing one with
     // every release keeps version comparison working without cloning anything.
     const tag = await this.probeGitTag(record, url, signal)
-    if (tag !== undefined) return tag
+    const moved = this.commitMoved(record.spec, head)
+    if (tag !== undefined) {
+      // A tag records the last published release; the head records the source as
+      // it stands. This repository commits without tagging, so the head can be
+      // ahead of its own package version: an update that only followed the tag
+      // would report "current" and reinstall nothing while the source moved on.
+      if (moved && tag.hasUpdate !== true) {
+        return {
+          ...tag,
+          hasUpdate: true,
+          headMoved: true,
+          note: `the tracked commit moved to ${String(head).slice(0, 7)} but the newest release tag is ${tag.latest}; reinstalling takes the tracked commit, not that tag`,
+        }
+      }
+      return tag
+    }
     return {
       kind: 'git',
       status: 'unknown',
@@ -789,7 +807,7 @@ class Updater {
       head,
       pinned: head,
       note: 'the head commit was read; the manifest is private and no release tag exists, so the version is compared by commit rather than by number',
-      hasUpdate: this.commitMoved(record.spec, head),
+      hasUpdate: moved,
     }
   }
 
@@ -836,9 +854,14 @@ class Updater {
    * @returns {boolean} Whether the installation is behind the remote.
    */
   commitMoved(spec, head) {
-    const match = /#([0-9a-f]{7,40})$/.exec(String(spec ?? ''))
-    if (match === null) return false
-    return !head.startsWith(match[1]) && !match[1].startsWith(head)
+    // The pin lives in the spec fragment, which also carries `path:/…` for a
+    // monorepo package (pnpm writes `#<commit>&path:/packages/<name>`), so it is
+    // read through the same parser as the rest of the spec. Anchoring the
+    // pattern at the end of the spec never matched that form.
+    const text = String(spec ?? '')
+    const pinned = parseFragment(text.includes('#') ? text.slice(text.indexOf('#') + 1) : undefined).ref
+    if (typeof pinned !== 'string' || !/^[0-9a-f]{7,40}$/.test(pinned)) return false
+    return !head.startsWith(pinned) && !pinned.startsWith(head)
   }
 
   /** Reachability of a tarball source. */
@@ -949,14 +972,21 @@ class Updater {
       entry.actions.push('update')
       return entry
     }
-    // A private repository without release tags still moves: compare commits.
+    // A private repository without release tags still moves only when the
+    // recorded spec pins a commit behind the head; the tag probe above already
+    // proved that no tag supersedes the installed version, so an unpinned spec
+    // is current rather than unknown.
     if (probe.kind === 'git' && probe.status === 'unknown' && probe.head !== undefined && isVersion(record.version)) {
-      const moved = probe.hasUpdate === true
-      if (moved) {
-        entry.status = 'update'
-        entry.actions.push('update')
-        return entry
-      }
+      entry.status = probe.hasUpdate === true ? 'update' : 'current'
+      if (entry.status === 'update') entry.actions.push('update')
+      return entry
+    }
+    // The newest tag can be older than the installed version: this repository
+    // installs from a branch, which runs ahead of its last release tag. The page
+    // reads "current → 0.1.1" from that pair, so the probe says which number is
+    // the tag rather than letting it read as a target.
+    if (probe.kind === 'git' && probe.status === 'ok' && probe.latest !== undefined && probe.hasUpdate !== true && compareVersions(probe.latest, record.version) < 0) {
+      entry.note = `the newest release tag on the remote is ${probe.latest}, older than the installed version; the plugin is installed from a commit, so the tag is not an older version to install`
     }
     if (probe.kind === 'local' && probe.stale === true) {
       entry.status = 'stale'
@@ -1186,20 +1216,21 @@ class Updater {
   /**
    * Apply the plan a caller confirmed.
    * @param {object} [plan] - `{ updates: [{ id, version? }], incompatible: [{ id, accept? }] }`.
+   * @param {object} [scanOptions] - Forwarded to {@link ensureReport} and the closing rescan: `force` reads the live state, `signal` cancels.
    * @returns {Promise<object>} One outcome per item.
    */
-  async apply(plan = {}) {
+  async apply(plan = {}, scanOptions = {}) {
     const items = [...(plan.updates ?? []).map((item) => ({ ...item, intent: 'update' })), ...(plan.incompatible ?? []).map((item) => ({ ...item, intent: 'incompatible' }))]
     if (items.length === 0) return { ok: false, message: 'the plan is empty', items: [] }
     if (this.ctx.get('pluginManager') === undefined) return { ok: false, message: 'the plugin manager is unavailable in this profile', items: [] }
-    const current = await this.ensureReport({ maxAgeMinutes: 10 })
+    const current = await this.ensureReport({ maxAgeMinutes: 10, force: scanOptions.force === true, signal: scanOptions.signal })
     const byId = new Map(current.entries.map((entry) => [entry.id, entry]))
     return this.exclusive(async () => {
       const outcomes = []
       for (const item of items) {
         const entry = byId.get(item.id)
         if (entry === undefined) {
-          outcomes.push({ id: item.id, ok: false, message: 'unknown plugin' })
+          outcomes.push({ id: item.id, ok: false, message: `no plugin named "${item.id}" is in the current report; ids look like \`profile:<package>\`, or pass a package name` })
           continue
         }
         if (entry.builtin) {
@@ -1233,7 +1264,10 @@ class Updater {
         }
       }
       this.lastPlan = { at: new Date().toISOString(), outcomes }
-      this.lastReport = await this.scan().catch(() => this.lastReport)
+      // A failed rescan must not be cached as the report: the next `show` would
+      // then serve a scan that never completed.
+      const rescanned = await this.scan({ signal: scanOptions.signal }).catch(() => undefined)
+      if (rescanned !== undefined) this.lastReport = rescanned
       return { ok: outcomes.every((outcome) => outcome.ok !== false), items: outcomes }
     })
   }
@@ -1275,6 +1309,9 @@ class Updater {
         status: entry.status,
         latest: entry.probe?.compatibleLatest ?? entry.probe?.latest,
         blockedLatest: entry.probe?.blockedLatest,
+        // The commit the remote actually tracks, so an update that installs it
+        // is not mistaken for an install of `latest`.
+        head: entry.probe?.headMoved === true ? entry.probe?.head : undefined,
         requirements: entry.dsh?.ok === false ? entry.dsh.requirements : undefined,
         note: entry.probe?.note,
       })),
@@ -1349,10 +1386,15 @@ export function apply(ctx, config) {
             throw new Error('this profile lets the user confirm plugin changes on the Plugins page only; set agentToolMirrorsPlan: true on the plugin-updater row to let the agent apply a plan too')
           }
           const resolve = (value) => updater.lastReport?.entries?.find((entry) => entry.id === value || entry.name === value)?.id ?? value
-          return updater.apply({
-            updates: (input.updates ?? []).map((item) => ({ id: resolve(item.id), version: item.version })),
-            incompatible: (input.incompatible ?? []).map((item) => ({ id: resolve(item.id), accept: item.accept === true })),
-          })
+          // Once per call: the default ten-minute cache otherwise keeps reporting
+          // the state before the change, which is exactly what "check" then shows.
+          return updater.apply(
+            {
+              updates: (input.updates ?? []).map((item) => ({ id: resolve(item.id), version: item.version })),
+              incompatible: (input.incompatible ?? []).map((item) => ({ id: resolve(item.id), accept: item.accept === true })),
+            },
+            { force: true },
+          )
         },
       }),
       'dsh-plugin-updater: plugin_update tool',

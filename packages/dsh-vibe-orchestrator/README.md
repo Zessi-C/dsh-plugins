@@ -20,8 +20,8 @@ delegates to, not selectable modes.
 | Tier | Default route | Tools | Purpose |
 |---|---|---|---|
 | `fast` | `agent2cli/deepseek-v4.1-flash` | full working toolset | mechanical, well-specified work |
-| `good` | `agent2cli/Qwen3.8-Flash` | full working toolset | design, debugging, judgement |
-| `expert` | `cpa/gemini-3.8-flash-high` | reads everything, writes new plans | advice on hard problems |
+| `good` | `cpa/gemini-3.8-flash-high` | full working toolset | design, debugging, judgement |
+| `expert` | `cpa/gpt-6.1-sol` | reads everything, writes new plans | advice on hard problems |
 
 The director keeps reading and routing tools only. `write`, `edit`, `bash`, and
 `pwsh` are removed from its visible set *and* blocked by an execution guard, so it
