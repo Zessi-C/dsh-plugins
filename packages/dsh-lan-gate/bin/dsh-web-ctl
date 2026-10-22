@@ -70,6 +70,10 @@ PORTAL_UNIT = "dsh-portal.service"
 PORTAL_CONFIG = "/etc/dsh-portal/config.json"
 PORTAL_LOG = "/var/log/dsh-portal/access.log"
 PORTAL_PAM = "/etc/pam.d/dsh-portal"
+# 门户单元的 ExecStart 里写死的解释器。doctor 必须**按它**判定 python3-pam 是否可用：
+# PATH 里的 python3 可能是 conda 的（本机实测 /opt/miniconda3/bin/python3），
+# 那里没有 PAM 模块，于是「门户健康」被误报成「门户无法认证」。
+PORTAL_PYTHON = "/usr/bin/python3"
 INSTANCE_UNIT = "dsh@{user}.service"
 SHARED_NODE = "/opt/dsh/node"
 DSH_BIN = SHARED_NODE + "/bin/dsh"
@@ -165,7 +169,7 @@ SERVER_BUNDLE = (
 
 # 与 package.json 的 version 保持一致（单文件零依赖的 CLI 不读 manifest；
 # doctor 会核对这一项）。改版本时两处都要动。
-VERSION = "0.13.1"
+VERSION = "0.14.3"
 
 SSH_OPTS = "-o ConnectTimeout=15 -o BatchMode=yes"
 
@@ -401,7 +405,7 @@ fi
 printf 'NPMRC_READABLE=%s\n' "$NPMRC_READABLE"
 printf 'SECRET_PERM=%s\n' "$($S stat -c %a "${CFG_SECRET_FILE:-/etc/dsh-portal/secret}" 2>/dev/null)"
 printf 'PAM_FILE=%s\n'    "$([ -f __PAM__ ] && echo yes || echo no)"
-printf 'PY_PAM=%s\n'      "$(python3 -c 'import PAM; print("yes")' 2>/dev/null || echo no)"
+printf 'PY_PAM=%s\n'      "$(__PORTAL_PY__ -c 'import PAM; print("yes")' 2>/dev/null || echo no)"
 printf 'LEGACY_UNIT=%s\n' "$([ -f "$HOME/.config/systemd/user/dsh-web.service" ] && echo present || echo clean)"
 printf 'AUDIT_LINES=%s\n' "$(wc -l < __AUDIT__ 2>/dev/null)"
 """
@@ -416,6 +420,7 @@ def read_state(t):
               .replace("__SEED__", SEED_DIR)
               .replace("__NODE__", SHARED_NODE)
               .replace("__PAM__", PORTAL_PAM)
+              .replace("__PORTAL_PY__", PORTAL_PYTHON)
               .replace("__AUDIT__", PORTAL_LOG))
     rc, so, se = t.shell(script, timeout=60)
     if rc != 0 and not so:

@@ -711,6 +711,8 @@ class Portal:
         self.seeded = set()
         # username -> 门户为该用户换来的实例会话 cookie（转发时注入上游）
         self.sessions = {}
+        # username -> asyncio.Lock：引导单飞，避免冷启动时并发请求各跑一遍轮询
+        self.session_locks = {}
         # username -> 缓存的该实例 Set-Cookie 列表，供多设备/新浏览器快速分发，避免重复翻日志
         self.instance_cookie_sets = {}
         allowed = {a.lower().strip() for a in (cfg.get("public_authorities") or [])}
@@ -934,7 +936,17 @@ class Portal:
             await asyncio.sleep(0.5)
 
     async def bootstrap_session(self, username, port, restart=False):
-        """用实例的启动 token 换 dsh 的会话 cookie（浏览器永不接触 token）。"""
+        """用实例的启动 token 换 dsh 的会话 cookie（浏览器永不接触 token）。
+
+        必须**轮询到真的换到 cookie**，不能「端口一通就发一次请求」：
+        实例启动是分阶段的，实测时间线（2026-10-22 zeiss，冷启动）——
+          4.0s  端口已 listen，GET / 回 404（应用还没挂完路由）
+          4.9s  回 401（cookie 中间件已生效，但 journal 里最后一个 token 还是**上一次运行**的）
+          8.2s  dsh 打印新 token，GET /?token=… 才 303 + Set-Cookie
+        `launch_token` 取的是「本 boot 最后一条 token=」，实例重启后到新 token 打印之前，
+        它拿到的是上一轮的旧 token —— 一次定成败就会把 404/401 直接透给浏览器
+        （用户看到的是冷启动后第一屏 404）。
+        """
         if restart:
             if await port_open(port):
                 self.log("info", "instance is already running, skip destructive restart", user=username, port=port)
@@ -944,6 +956,17 @@ class Portal:
                     if await port_open(port):
                         break
                     await asyncio.sleep(0.5)
+        deadline = time.monotonic() + self.cfg.get("backend_wait_seconds", 240)
+        while True:
+            sets = await self._try_bootstrap(username, port)
+            if sets:
+                return sets
+            if time.monotonic() >= deadline:
+                return None
+            await asyncio.sleep(0.5)
+
+    async def _try_bootstrap(self, username, port):
+        """一次引导尝试：取 token → 换 cookie。未就绪/旧 token 时返回 None。"""
         token = await launch_token(username, self.cfg)
         if not token:
             return None
@@ -978,23 +1001,31 @@ class Portal:
 
         门户自己持有会话、转发时注入，浏览器那张可能过期的 cookie 就不参与上游认证 ——
         这样实例重启换 token 之后，用户侧一次 401 都不会看到。
+
+        单飞：冷启动时浏览器的十几个资源请求会同时进来，各自跑一遍引导轮询等于
+        把 journalctl 打成风暴。同一用户只让第一个请求去换，其余等它的结果。
         """
         if not force and self.sessions.get(username):
             return self.sessions[username]
-        sets = await self.bootstrap_session(username, port)
-        if not sets:
-            sets = await self.bootstrap_session(username, port, restart=True)
-        if not sets:
-            return None
-        cookie = "; ".join(s.split(";", 1)[0].strip() for s in sets if s.strip())
-        if not cookie:
-            return None
-        self.sessions[username] = cookie
-        return cookie
+        lock = self.session_locks.setdefault(username, asyncio.Lock())
+        async with lock:
+            if not force and self.sessions.get(username):
+                return self.sessions[username]
+            sets = await self.bootstrap_session(username, port)
+            if not sets:
+                sets = await self.bootstrap_session(username, port, restart=True)
+            if not sets:
+                return None
+            cookie = "; ".join(s.split(";", 1)[0].strip() for s in sets if s.strip())
+            if not cookie:
+                return None
+            self.sessions[username] = cookie
+            return cookie
 
     # —— 反代 ——
 
-    def rewrite_request_head(self, method, target, version, headers, port, public_authority):
+    def rewrite_request_head(self, method, target, version, headers, port,
+                             public_authority, upstream_cookie=None):
         upstream_host = f"127.0.0.1:{port}"
         is_upgrade = (header_first(headers, "upgrade", "") or "").lower() == "websocket"
         # `connection` / `upgrade` 必须由我们统一重写：原样转发再加一条会让
@@ -1003,6 +1034,7 @@ class Portal:
                 "upgrade"}
         out = [f"{method} {target} {version or 'HTTP/1.1'}"]
         saw_origin = False
+        kept_cookies = []
         for key, value in headers:
             low = key.lower()
             if low in drop:
@@ -1038,14 +1070,17 @@ class Portal:
                 # 实例 —— 门户的账号隔离完全失效。经验证：带着别人的 cookie 的
                 # 请求确实会被上游当成已登录。
                 #
-                # 门户自己换来的会话由 bootstrap_session/ensure_session 注入，
-                # 不依赖浏览器这张；这里只做减法，不改写值。
-                kept = [p.strip() for p in value.split(";")
-                        if p.strip() and not p.strip().lower().startswith(DSH_COOKIE_PREFIX)]
-                if kept:
-                    out.append(f"cookie: {'; '.join(kept)}")
-                continue                      # 全被筛掉就不发 cookie 头
+                # 剥掉之后必须**补上门户自己换来的那张**（upstream_cookie），
+                # 否则上游恒 401：门户补发 Set-Cookie → 下一跳又被剥 → 无限 303。
+                # 浏览器那张只用来「判断有没有会话」，真正的身份凭据只由门户注入。
+                kept_cookies += [p.strip() for p in value.split(";")
+                                 if p.strip() and not p.strip().lower().startswith(DSH_COOKIE_PREFIX)]
+                continue
             out.append(f"{key}: {value}")
+        if upstream_cookie:
+            kept_cookies.append(upstream_cookie)
+        if kept_cookies:
+            out.append(f"cookie: {'; '.join(kept_cookies)}")
         if not saw_origin:
             # 浏览器对同源 GET **不发 Origin**，而 dsh 的部分 /api（实测
             # /api/task-board/state）在没有 Origin 时直接 403 —— 表现就是
@@ -1513,8 +1548,12 @@ class Portal:
             return
 
         try:
+            # 门户自己换来的实例会话：浏览器那张被剥掉之后，上游只认这一张。
+            # 拿不到就直连上游（会 401），由下面的 401 分支重新引导一次。
+            upstream_cookie = await self.ensure_session(username, port)
             head, is_upgrade = self.rewrite_request_head(
-                method, target, version, headers, port, public_authority)
+                method, target, version, headers, port, public_authority,
+                upstream_cookie=upstream_cookie)
             up_w.write(head)
             await up_w.drain()
             has_body = bool(header_first(headers, "content-length")
@@ -1553,11 +1592,17 @@ class Portal:
                 self.log("warn", "upstream 401 → re-bootstrap", user=username,
                          port=port, path=path_only, ws=is_upgrade)
                 self.instance_cookie_sets.pop(username, None)
+                # 手里那张注入用的会话已失效（实例重启换 token）：先丢掉再换新的，
+                # 否则下一跳仍注入旧 cookie，用户会一直在 401 里打转。
+                self.sessions.pop(username, None)
                 sets = await self.bootstrap_session(username, port)
                 if not sets:
                     sets = await self.bootstrap_session(username, port, restart=True)
                 if sets:
                     self.instance_cookie_sets[username] = sets
+                    cookie = "; ".join(s.split(";", 1)[0].strip() for s in sets if s.strip())
+                    if cookie:
+                        self.sessions[username] = cookie
                     if method == "GET" and not is_upgrade:
                         # 幂等：换好 cookie 让浏览器重走一次，用户无感。
                         writer.write(response(303, "See Other", [

@@ -332,9 +332,11 @@ class RequestHeaderTest(unittest.TestCase):
         cfg["log_file"] = os.path.join(self.tmp.name, "access.log")
         self.portal = portal.Portal(cfg)
 
-    def rewrite(self, headers, port=43001, authority="100.96.52.76:3080"):
+    def rewrite(self, headers, port=43001, authority="100.96.52.76:3080",
+                upstream_cookie=None):
         head, _ = self.portal.rewrite_request_head(
-            "GET", "/", "HTTP/1.1", headers, port, authority)
+            "GET", "/", "HTTP/1.1", headers, port, authority,
+            upstream_cookie=upstream_cookie)
         return head.decode("latin1")
 
     def cookie_line(self, text):
@@ -367,6 +369,36 @@ class RequestHeaderTest(unittest.TestCase):
     def test_harmless_cookie_is_passed_through(self):
         text = self.rewrite([("Cookie", "theme=dark")])
         self.assertIn("theme=dark", self.cookie_line(text) or "")
+
+    def test_portal_session_is_injected_after_stripping(self):
+        """剥离必须配注入，否则上游恒 401（v0.14.2 的无限 303 回归）。
+
+        浏览器那张只用来判断「有没有会话」；真正的身份凭据由门户自己换来的
+        upstream_cookie 注入。缺了注入这一步，请求到上游是「无 cookie」→ 401
+        → 门户补发 Set-Cookie → 下一跳又被剥 → 用户永远停在重定向里。
+        """
+        text = self.rewrite([("Cookie", "dsh-auth-AAAA=STOLEN; theme=dark")],
+                            upstream_cookie="dsh-auth-GOOD=session")
+        line = self.cookie_line(text)
+        self.assertIsNotNone(line, text)
+        self.assertIn("dsh-auth-GOOD=session", line)
+        self.assertNotIn("STOLEN", line)
+        self.assertIn("theme=dark", line)
+
+    def test_portal_session_injected_even_without_client_cookie(self):
+        text = self.rewrite([("Host", "x")], upstream_cookie="dsh-auth-GOOD=session")
+        self.assertIn("dsh-auth-GOOD=session", self.cookie_line(text) or "")
+
+    def test_no_cookie_header_when_nothing_to_send(self):
+        text = self.rewrite([("Cookie", "dsh-auth-AAAA=STOLEN")])
+        self.assertIsNone(self.cookie_line(text), text)
+
+    def test_cookie_header_appears_once(self):
+        # 多条 Cookie 头 + 注入：必须合成一条，上游只解析第一条。
+        text = self.rewrite([("Cookie", "a=1"), ("Cookie", "b=2")],
+                            upstream_cookie="dsh-auth-GOOD=s")
+        low = text.lower()
+        self.assertEqual(low.count("\r\ncookie:"), 1, text)
 
     def test_hop_by_hop_headers_are_dropped(self):
         text = self.rewrite([("Connection", "keep-alive"), ("Keep-Alive", "timeout=5"),
