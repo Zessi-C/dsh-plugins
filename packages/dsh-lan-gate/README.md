@@ -1,9 +1,10 @@
 # dsh-lan-gate
 
-> **v0.7.0 起本插件是纯 client shim。** 宿主半包（listenHost 改写 + whois 门禁）
-> 随多用户门户（dsh-portal + dsh@.service）落地已删除——实例只绑回环、由门户
-> 统一鉴权，宿主半包没有生效场景，也没有需要兼容的旧部署。
-> profile patch 里的 lan-gate 条目和配置可原样保留（apply 接受并忽略）。
+> **宿主半包在 v0.15.0 重新长回来一小块：只为「重启实例」服务。**
+> v0.7.0 删掉的那套（listenHost 改写 + whois 门禁）不会回来——门户架构下
+> 没有生效场景。现在 `lib/index.js` 只注册两条路由（`/__lan-gate/ping`、
+> `/__lan-gate/restart`）并往 index.html 注入一个页面令牌，其余一切照旧。
+> profile patch 里的 lan-gate 条目和配置仍可原样保留（apply 接受并忽略）。
 > 需要考古或回归直连模式：checkout tag v0.6.1。下文 Phase 1 / Phase 2 的
 > 架构说明保留作历史文档。
 
@@ -133,6 +134,54 @@ docs/                       截图等证据 + deployment-inventory.md（部署�
 
 验证：`probe/` 之外另有一份一次性的双端探针（门户登出链路 + 浏览器按钮挂载），
 见下文「验证」。
+
+### 重启实例（v0.15.0）
+
+改完插件、改完配置、装完包，dsh 都要重启才吃到。以前只有终端一条路
+（`dsh-web-ctl restart <user>`，还要 root）。v0.15.0 在「退出登录」上方
+（同一席位 `sidebar.footer.action`，`order: 40`）加了一行「重启实例」：
+
+```
+用户点「重启实例」 → 变成「再点一次重启」（5 秒不点自动退回，防手滑）
+再点一次
+  → POST /__lan-gate/restart            （宿主半包，带 X-Dsh-Lan-Gate-Token）
+  → 202 {ok, pid, exitCode:1}
+  → ctx.appExit(1)                      （launcher 的优雅关闭：先 dispose 整棵树）
+  → systemd 单元 Restart=on-failure 在 RestartSec=2 后重新拉起
+  → 浏览器每 700ms 轮询 GET /__lan-gate/ping，看到 **pid 变了** 就 location.reload()
+```
+
+**为什么是「非零退出 + 让 systemd 拉起来」，而不是自己 `systemctl restart`**：
+实例以普通用户身份运行，`dsh@<user>.service` 是系统单元，它没有权限重启自己。
+但它不需要权限 —— 单元里本来就写着 `Restart=on-failure`，主进程以非零码退出
+就会被重新拉起。所以走的是 `ctx.appExit(1)`（非 `process.exit`），优雅关闭
+最多 5 秒，之后 shutdown 控制器强制退出；本插件再兜一道 15 秒的硬退。
+
+**为什么令牌 + 自定义头 + 同源三层**：路由挂在 webserver 上，不经过 dsh 的
+`/api` 信任栅栏。令牌由宿主在每次渲染 index.html 时注入
+（`webserver/index-inject` 的 `{kind:'global'}` 行，全局名
+`__DSH_LAN_GATE_RESTART__`），而 index.html 本身要登录才发得出来；自定义头
+让跨站表单发不出去、跨站 fetch 要过 CORS 预检（本路由不应答 OPTIONS）；带
+Origin 时必须与本次请求的 Host 同源（门户会把两者都改写成 `127.0.0.1:<port>`）。
+
+**边界（当成契约读，不要当 bug 报）**：
+
+| 情况 | 行为 |
+|---|---|
+| 不是 systemd 拉起（手动 `dsh web`、`INVOCATION_ID` 为空） | 宿主 `managed=false`，**按钮不渲染**；直接打路由会得到 409 `not-systemd-managed` |
+| 正在跑 agent 回合 | 重启会**中断这个回合**（主进程没了）；`KillMode=process` 决定它起的后台任务**不会**跟着停，会成为孤儿进程 |
+| 重复点击 | 第一次点击后进入 busy 态并禁用；服务端另有 `restarting` 闸，并发请求得到 409 `already-restarting` |
+| 重启后浏览器会话 | 仍然有效（cookie 签名密钥持久化在 `$DSH_HOME/.credentials.yaml`）；门户侧由既有的 401 重新引导路径换新 |
+| 页面上没有 `__DSH_LAN_GATE_RESTART__`（老版本插件 / 静态 worker 部署） | 不渲染按钮，也不多发请求 |
+
+排查入口：浏览器控制台 `__DSH_LAN_GATE__` 里的 `restartRegistered` /
+`restartConfig` / `restartPhase` / `restartPidAfter` / `restartError`；
+宿主侧 `journalctl -u dsh@<user> -g dsh-lan-gate` 能看到
+`restart requested pid=… from=…`。
+
+离线验证：`node probe/restart_button.spec.mjs`（按钮挂载/状态机/轮询，
+假 fetch 与假 React）与 `node probe/host_routes.spec.mjs`（两条路由的鉴权矩阵、
+`appExit` 调用、注入行）。
 
 ---
 

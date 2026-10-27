@@ -37,6 +37,21 @@
  * 却是外部 authority，两者不同就是「我在一个反代后面」。直连实例（浏览器
  * origin 与 Host 一致）不渲染这行按钮，也就不多出对后端不存在的路由的探针。
  * 服务端是否真有这条路由由 /__portal/me 的可用性决定（见 probePortal）。
+ *
+ * ## v0.15.0：重启本实例
+ *
+ * 改完插件、改完配置、装完包，dsh 要重启才吃到 —— 以前只能去终端敲
+ * `dsh-web-ctl restart <user>`。本版在侧边栏底部（退出登录上方）加一行「重启实例」：
+ *
+ *   点一次 → 「再点一次重启」（5 秒内不点就退回原状，避免手滑）
+ *   再点   → POST /__lan-gate/restart（带宿主注入的页面令牌）
+ *          → 宿主 `ctx.appExit(1)` → 单元 `Restart=on-failure` 把进程重新拉起
+ *          → 本文件轮询 /__lan-gate/ping，看到 **pid 变了** 就 location.reload()
+ *
+ * 与「退出登录」不同，这行**不看门户**：重启是实例自己的能力，直连实例同样需要。
+ * 能不能重启由宿主说了算 —— 宿主通过 index.html 注入 `__DSH_LAN_GATE_RESTART__`
+ * （令牌 / pid / managed）。没有这个全局、或 `managed !== true`（不是 systemd
+ * 拉起的裸进程，退出后没人拉起）时**不渲染按钮**。
  */
 
 (function () {
@@ -61,6 +76,12 @@
     portalUser: null,
     logoutRegistered: null,
     logoutClicks: 0,
+    restartRegistered: null,
+    restartConfig: null,
+    restartClicks: 0,
+    restartPhase: null,
+    restartPidAfter: null,
+    restartError: null,
     tries: 0,
     errors: [],
   };
@@ -328,6 +349,14 @@
           signOutAria: '退出登录并切换账号',
           signingOut: '正在退出…',
           failed: '退出失败，请重试',
+          restart: '重启实例',
+          restartAria: '重启这个 dsh 实例',
+          restartHint: '会中断正在跑的回合；已起的后台任务不会跟着停。',
+          restartConfirm: '再点一次重启',
+          restartConfirmHint: '再点一次就重启。正在跑的 agent 回合会立刻中断。',
+          restarting: '正在重启…',
+          restartFailed: '重启失败，再点重试',
+          restartTimeout: '等太久了：请手动刷新页面确认',
         },
         en: {
           ns: 'lanGate',
@@ -335,6 +364,14 @@
           signOutAria: 'Sign out and switch account',
           signingOut: 'Signing out…',
           failed: 'Sign-out failed, please retry',
+          restart: 'Restart instance',
+          restartAria: 'Restart this dsh instance',
+          restartHint: 'Interrupts the running turn; background jobs keep running.',
+          restartConfirm: 'Click again to restart',
+          restartConfirmHint: 'Click again to restart. The running agent turn ends immediately.',
+          restarting: 'Restarting…',
+          restartFailed: 'Restart failed, click to retry',
+          restartTimeout: 'Too slow: refresh the page to check',
         },
       };
 
@@ -356,6 +393,15 @@
 .dlg-signout[data-rail="true"]{box-sizing:border-box;justify-content:center;gap:0;
   width:36px;height:36px;padding:0;margin:4px 0}
 .dlg-signout[data-rail="true"] .dlg-signout-label{display:none}
+/* 重启行：沿用退出登录那套尺寸，只在状态上用颜色区分（确认=警示、失败=错误）。 */
+.dlg-restart[data-phase="confirm"]{color:var(--dsw-alias-state-warning-primary,#b26a00)}
+.dlg-restart[data-phase="failed"]{color:var(--dsw-alias-state-error-primary,#c0392b)}
+.dlg-restart[data-phase="busy"]{opacity:.72;cursor:default}
+.dlg-restart[data-phase="busy"] .dlg-restart-icon{animation:dlg-restart-spin 1s linear infinite}
+@keyframes dlg-restart-spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){
+  .dlg-restart[data-phase="busy"] .dlg-restart-icon{animation:none}
+}
 `;
 
       function installSignOutStyle() {
@@ -818,6 +864,235 @@
         });
       }
 
+      /* ────────────────────────────────────────────────────────────
+       * 重启实例（v0.15.0）
+       *
+       * 与服务端的分工：宿主半包（lib/index.js）注册两条路由，并在 index.html 里
+       * 注入 __DSH_LAN_GATE_RESTART__；这里只负责「点两下、发一次 POST、盯着
+       * pid 换没换」。判定「能不能重启」的依据全在注入值里，前端不猜。
+       * ──────────────────────────────────────────────────────────── */
+
+      const RESTART_CONFIRM_MS = 5000;
+      /** 先给旧进程一点时间把 202 发完并真的退出，再去问 pid。 */
+      const RESTART_FIRST_WAIT_MS = 2500;
+      const RESTART_POLL_MS = 700;
+      /** 门户后面要等它重新引导会话，冷启动实测 8 秒左右；留足余量。 */
+      const RESTART_GIVE_UP_MS = 120000;
+
+      /**
+       * 读宿主注入的配置。**只有 managed === true 才返回**：
+       * 不是 systemd 拉起的进程，退出后没人拉回来 —— 那种情况下宁可不给按钮，
+       * 也不给一个「点了就把实例弄死」的按钮。
+       */
+      function restartConfig() {
+        const raw = safe(function () { return globalThis.__DSH_LAN_GATE_RESTART__; });
+        if (!raw || typeof raw !== 'object') return null;
+        if (raw.managed !== true) return null;
+        if (typeof raw.token !== 'string' || raw.token.length === 0) return null;
+        return raw;
+      }
+
+      /** 纯状态机：按钮这一次点击之后该进入哪个状态。'restart' = 真的发起。 */
+      function restartNextPhase(phase) {
+        if (phase === 'idle' || phase === 'failed') return 'confirm';
+        if (phase === 'confirm') return 'restart';
+        return 'busy';    // busy / done：忽略后续点击
+      }
+
+      function restartPing(cfg) {
+        return fetch(cfg.pingPath || '/__lan-gate/ping', {
+          credentials: 'same-origin',
+          cache: 'no-store',
+        }).then(function (res) {
+          if (!res.ok) return null;
+          return res.json();
+        }).then(function (body) {
+          return body && body.ok === true ? body : null;
+        }, function () {
+          // 重启窗口里连接被拒是**预期**，不是错误。
+          return null;
+        });
+      }
+
+      /** 轮询到「pid 与重启前不同」为止；超时 reject。 */
+      function waitForRestart(cfg) {
+        const before = cfg.pid;
+        const deadline = Date.now() + RESTART_GIVE_UP_MS;
+        function tick() {
+          if (Date.now() > deadline) return Promise.reject(new Error('timeout'));
+          return restartPing(cfg).then(function (body) {
+            if (body && body.pid !== before) return body;
+            return new Promise(function (resolve) {
+              setTimeout(resolve, RESTART_POLL_MS);
+            }).then(tick);
+          });
+        }
+        return new Promise(function (resolve) {
+          setTimeout(resolve, RESTART_FIRST_WAIT_MS);
+        }).then(tick);
+      }
+
+      function requestRestart(cfg) {
+        const headers = {};
+        headers[cfg.tokenHeader || 'x-dsh-lan-gate-token'] = cfg.token;
+        return fetch(cfg.restartPath || '/__lan-gate/restart', {
+          method: 'POST',
+          credentials: 'same-origin',
+          cache: 'no-store',
+          headers: headers,
+        }).then(function (res) {
+          const parse = function () {
+            return res.json().then(function (body) { return body; }, function () { return {}; });
+          };
+          if (res.status === 202 || res.status === 200) return parse();
+          return parse().then(function (body) {
+            const why = (body && body.error) ? String(body.error) : '';
+            const detail = (body && body.detail) ? String(body.detail) : '';
+            const error = new Error('HTTP ' + res.status + (why ? ' ' + why : '') + (detail ? '：' + detail : ''));
+            error.body = body;
+            throw error;
+          });
+        });
+      }
+
+      /**
+       * 完整的一次重启：POST → 等新 pid → reload。
+       * 抽成纯函数（依赖只从参数进）是为了能离线跑探针 —— 见 probe/restart_button.spec.mjs。
+       */
+      function startRestartFlow(cfg, hooks) {
+        const options = hooks || {};
+        const report = options.report || function () {};
+        const reload = options.reload || function () {
+          safe(function () { globalThis.location.reload(); });
+        };
+        diag.restartClicks += 1;
+        diag.restartPhase = 'busy';
+        report('busy');
+        return requestRestart(cfg).then(function () {
+          return waitForRestart(cfg);
+        }).then(function (body) {
+          diag.restartPidAfter = body.pid;
+          diag.restartPhase = 'done';
+          report('done');
+          reload();
+          return true;
+        }, function (error) {
+          diag.restartError = String(error && error.message);
+          diag.restartPhase = 'failed';
+          warn('重启失败：' + diag.restartError);
+          report('failed');
+          return false;
+        });
+      }
+
+      function restartIcon(h) {
+        return h('span', { className: 'dlg-signout-icon dlg-restart-icon', 'aria-hidden': 'true' },
+          h('svg', {
+            viewBox: '0 0 16 16', width: 14, height: 14, fill: 'none',
+            stroke: 'currentColor', strokeWidth: 1.4,
+            strokeLinecap: 'round', strokeLinejoin: 'round',
+            xmlns: 'http://www.w3.org/2000/svg',
+          },
+          h('path', { d: 'M13.1 6.4A5.4 5.4 0 1 0 13.3 9.2' }),
+          h('path', { d: 'M13.5 3.1v3.5H10' })));
+      }
+
+      function renderRestart(t, phase, wide, onClick, h) {
+        const label = phase === 'busy' ? t('restarting')
+          : phase === 'failed' ? t('restartFailed')
+            : phase === 'confirm' ? t('restartConfirm')
+              : t('restart');
+        const hint = phase === 'confirm' ? t('restartConfirmHint') : t('restartHint');
+        return h('button', {
+          type: 'button',
+          className: 'dlg-signout dlg-restart',
+          'data-phase': phase,
+          'data-rail': wide ? undefined : 'true',
+          'aria-label': t('restartAria'),
+          title: wide ? hint : label,
+          disabled: phase === 'busy',
+          onClick: onClick,
+        }, restartIcon(h), h('span', { className: 'dlg-signout-label' }, label));
+      }
+
+      function RestartButton(props) {
+        if (props.__expand) {
+          return renderRestart(props.t, 'idle', props.wide !== false, null, props.__h);
+        }
+        return props.__h(RestartInner, props);
+      }
+
+      function RestartInner(props) {
+        const React = props.__react;
+        const h = props.__h;
+        // 与退出登录同一套降级：拿不到 useState 就退回静态渲染，按钮仍可点，
+        // 只是没有「确认/重启中」两段文案 —— 渲染期抛异常会炸掉整个侧边栏。
+        const [phase, setPhase] = typeof React.useState === 'function'
+          ? React.useState('idle') : ['idle', function () {}];
+        // 确认态 5 秒后自动退回：不然「点了一下没点第二下」会留下一个悬空的
+        // 红色按钮，下次手滑点一下就直接重启了。
+        if (typeof React.useEffect === 'function') {
+          React.useEffect(function () {
+            if (phase !== 'confirm') return undefined;
+            const timer = setTimeout(function () { setPhase('idle'); }, RESTART_CONFIRM_MS);
+            return function () { clearTimeout(timer); };
+          }, [phase]);
+        }
+        const onClick = function (event) {
+          try { event.preventDefault(); event.stopPropagation(); } catch (_) {}
+          const next = restartNextPhase(phase);
+          if (next === 'restart') {
+            startRestartFlow(props.cfg, { report: setPhase });
+            return;
+          }
+          setPhase(next);
+        };
+        return renderRestart(props.t, phase, props.wide !== false, onClick, h);
+      }
+
+      /**
+       * 挂载重启按钮。
+       *
+       * 与退出登录不同，这里**不探门户**：重启是实例自己的能力，直连实例
+       * （127.0.0.1:43001）同样需要它。能不能挂由宿主注入值决定（见 restartConfig）。
+       */
+      function mountRestart(ctx, requireFn) {
+        const cfg = restartConfig();
+        diag.restartConfig = cfg ? { pid: cfg.pid, managed: cfg.managed === true } : null;
+        if (!cfg) {
+          // 直连裸进程、或宿主半包没跑起来（老版本）：不渲染，也不多打请求。
+          diag.restartRegistered = 'no-config';
+          return;
+        }
+        const ReactImpl = acquireReact(requireFn);
+        if (!ReactImpl) {
+          diag.restartRegistered = 'no-react';
+          return;
+        }
+        const h = ReactImpl.createElement;
+        const dict = safe(function () { return pickDict(ctx.locale); }) || defaultDict();
+        const t = function (key) { return dict[key] || key; };
+        safe(function () {
+          if (ctx.locale && typeof ctx.locale.register === 'function') {
+            ctx.locale.register(dict.ns || 'lanGate', { zh: DICTS.zh, en: DICTS.en });
+          }
+        });
+        const register = function () {
+          ctx.slots.register({
+            name: 'sidebar.footer.action',
+            id: 'lan-gate-restart',
+            order: 40,
+          }, function (props) {
+            return h(RestartButton, {
+              wide: props.wide, t: t, cfg: cfg, __react: ReactImpl, __h: h,
+            });
+          });
+        };
+        if (typeof ctx.slots.inject === 'function') ctx.slots.inject('sidebar.footer.action', register);
+        else register();
+        diag.restartRegistered = true;
+      }
+
       const name = 'dsh-lan-gate';
       // Cordis 的 ctx 是代理：不声明 inject 就取不到服务（报
       // "cannot get property \"connection\" without inject"）。
@@ -828,6 +1103,8 @@
         // 门户判定与 isLoopback 改写彼此独立：即便受信判定没过（公网域名），
         // 门户自己也会种好 dsh 的 cookie，这时仍然应该有「退出登录」。
         const disposeStyle = installSignOutStyle();
+        // 重启按钮与门户判定无关，首页一加载就该挂（拿不到宿主注入值时会自己跳过）。
+        safe(function () { mountRestart(ctx, require); });
         // 首页加载时就要做：把「门户别缓存这些页」的标记打出去，并拿到已知的门户状态。
         // 页面自检的回调在 self-check 拿到响应头后触发（最多等 5 秒）；超时则交给
         // 挂载时的探针/标记兜底。selfCheckSettled 只触发一次，避免重复注册。
@@ -877,6 +1154,13 @@
       exports.apply = apply;
       // 纯判定，给 probe/client_shim_probe.mjs 离线跑组合用。
       exports.shouldLeaveRestoredPage = shouldLeaveRestoredPage;
+      // 重启按钮里可离线判定的那部分（挂载本身要 React/cordis，探针另测）。
+      exports.restartInternals = {
+        restartConfig: restartConfig,
+        restartNextPhase: restartNextPhase,
+        startRestartFlow: startRestartFlow,
+        renderRestart: renderRestart,
+      };
       return module.exports;
     }
   });

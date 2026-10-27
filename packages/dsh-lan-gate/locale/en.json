@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "LAN Gate",
-    "description": "Browser shim for the multi-user portal: rewrites loopback detection and restores the crypto APIs plain HTTP lacks, so the settings pages work behind dsh-portal."
+    "description": "Browser shim for the multi-user portal: rewrites loopback detection and restores the crypto APIs plain HTTP lacks, so the settings pages work behind dsh-portal. The sidebar also carries Sign out and Restart instance (restart relies on the unit's Restart=on-failure)."
   }
 }
