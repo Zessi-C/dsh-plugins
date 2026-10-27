@@ -67,8 +67,8 @@
         "zh": "门户访问门禁"
       },
       "description": {
-        "en": "Browser shim for the multi-user portal: rewrites loopback detection and restores the crypto APIs plain HTTP lacks, so the settings pages work behind dsh-portal.",
-        "zh": "多用户门户的浏览器端 shim：改写回环判定并补齐明文 HTTP 缺失的 crypto API，让设置页在 dsh-portal 后面也能正常工作。"
+        "en": "Browser shim for the multi-user portal: rewrites loopback detection and restores the crypto APIs plain HTTP lacks, so the settings pages work behind dsh-portal. The sidebar also carries Sign out and Restart instance (restart relies on the unit's Restart=on-failure).",
+        "zh": "多用户门户的浏览器端 shim：改写回环判定并补齐明文 HTTP 缺失的 crypto API，让设置页在 dsh-portal 后面也能正常工作；侧边栏另有「退出登录」与「重启实例」（重启走单元 Restart=on-failure，点一下就重来）。"
       },
       "author": "Zessi-C",
       "homepage": "https://github.com/Zessi-C/dsh-plugins/tree/main/packages/dsh-lan-gate",
@@ -90,12 +90,12 @@
       },
       "versions": [
         {
-          "version": "0.14.3",
-          "publishTimestamp": 1792661578,
+          "version": "0.15.0",
+          "publishTimestamp": 1793108136,
           "source": {
             "type": "git",
             "url": "https://github.com/Zessi-C/dsh-plugins.git",
-            "commit": "2926b34ba15edaa7767eff29085a8afa4e2b940f",
+            "commit": "900eeec260564ffb3c49904bc9184373bf64be1f",
             "path": "packages/dsh-lan-gate"
           },
           "engines": {
