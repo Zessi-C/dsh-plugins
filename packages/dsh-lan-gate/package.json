@@ -1,6 +1,6 @@
 {
   "name": "dsh-lan-gate",
-  "version": "0.15.0",
+  "version": "0.15.1",
   "private": true,
   "description": "dsh-lan-gate：为多用户门户（dsh-portal + dsh@.service）提供浏览器端 shim（isLoopback 改写 + 补齐明文 HTTP 缺失的 crypto API），并在侧边栏底部加两行——「退出登录」（v0.14.0，配合门户 GET /__portal/logout?next=login）与「重启实例」（v0.15.0：宿主半包注册 /__lan-gate/restart，用 ctx.appExit(1) 走单元 Restart=on-failure，浏览器等 pid 变了再自动刷新）。v0.7.0～v0.14.3 的宿主半包（listenHost 改写 + whois 门禁）已删除——门户架构下无生效场景，需要时翻 v0.6.1。配套 CLI dsh-web-ctl 面向门户运维",
   "type": "module",

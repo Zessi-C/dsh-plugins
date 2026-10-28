@@ -59,7 +59,7 @@
 
   var diag = {
     plugin: 'dsh-lan-gate',
-    version: '0.11.0',
+    version: '0.15.1',
     layer1Ran: false,
     applyRan: false,
     loaderSeen: false,
@@ -375,10 +375,14 @@
         },
       };
 
-      /** 侧边栏行：与设置行同一套尺寸（宽版 42px，收起时 36px 圆钮）。 */
+      /** 侧边栏行：与设置行同一套尺寸（宽版 32px，收起时 36px 圆钮，单列全宽左对齐）。 */
       const SIGN_OUT_CSS = `
-.dlg-signout{box-sizing:border-box;user-select:none;width:100%;height:32px;
-  margin:2px 0;padding:6px 8px;gap:8px;border:none;border-radius:var(--dsw-radius-md,8px);
+/* 宿主页脚容器：强制单列纵向排列，消除多项横向挤压变形 */
+div[class*="footerActions"]{display:flex!important;flex-direction:column!important;width:100%!important;gap:2px!important}
+div[class*="collapsed"] div[class*="footerActions"],
+[data-sidebar-collapsed="true"] div[class*="footerActions"]{align-items:center!important;gap:4px!important}
+.dlg-signout{box-sizing:border-box;user-select:none;width:100%!important;flex:none!important;height:32px;
+  margin:1px 0;padding:6px 8px;gap:8px;border:none;border-radius:var(--dsw-radius-md,8px);
   background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;
   font-size:14px;font-weight:400;line-height:20px;cursor:pointer;
   display:flex;align-items:center;justify-content:flex-start;overflow:hidden;
@@ -391,7 +395,7 @@
 .dlg-signout-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   color:inherit;font-size:14px}
 .dlg-signout[data-rail="true"]{box-sizing:border-box;justify-content:center;gap:0;
-  width:36px;height:36px;padding:0;margin:4px 0}
+  width:36px!important;height:36px;padding:0;margin:4px 0}
 .dlg-signout[data-rail="true"] .dlg-signout-label{display:none}
 /* 重启行：沿用退出登录那套尺寸，只在状态上用颜色区分（确认=警示、失败=错误）。 */
 .dlg-restart[data-phase="confirm"]{color:var(--dsw-alias-state-warning-primary,#b26a00)}
