@@ -111,8 +111,8 @@
         "zh": "模型思考档位"
       },
       "description": {
-        "en": "Edit per-model thinking levels and model order inside the Models settings card, which the stock page leaves to the composition.",
-        "zh": "在模型设置卡里编辑每个模型的思考档位与顺序；官方页面把这些留给配置层。"
+        "en": "Edit per-model thinking levels, model order, and the detected context window, output cap, modalities and display name inside the Models settings card, which the stock page leaves to the composition.",
+        "zh": "在模型设置卡里编辑每个模型的思考档位与顺序，并把探测到的上下文窗口、输出上限、输入模态与显示名补进模型条目；官方页面把这些留给配置层。"
       },
       "author": "Zessi-C",
       "homepage": "https://github.com/Zessi-C/dsh-plugins/tree/main/packages/dsh-model-thinking-levels",
@@ -127,19 +127,22 @@
           "deepseek-harness",
           "settings",
           "models",
-          "reasoning-effort"
+          "reasoning-effort",
+          "capabilities",
+          "context-window",
+          "modalities"
         ],
         "labels": [],
         "sortKeys": {}
       },
       "versions": [
         {
-          "version": "1.2.1",
-          "publishTimestamp": 1792646680,
+          "version": "1.3.0",
+          "publishTimestamp": 1793602113,
           "source": {
             "type": "git",
             "url": "https://github.com/Zessi-C/dsh-plugins.git",
-            "commit": "95e1b42f66b07f12f714ebe039a425dd83a010ce",
+            "commit": "5ab299ceb9c2461ffea0db75d22873c17a8af919",
             "path": "packages/dsh-model-thinking-levels"
           },
           "engines": {
