@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 /**
- * Offline acceptance check for the panel: model drag-to-reorder, and the
- * gateway thinking-level probe.
+ * Offline acceptance check for the panel: model drag-to-reorder, the gateway
+ * thinking-level probe, and the capability fills (context window, output cap,
+ * modalities, name) the panel writes alongside them.
  *
  * The plugin is a browser module: it registers itself through
  * `window.__ModuleLoader__` and builds its UI with `React.createElement`. This
  * script supplies both — a loader stub that captures the module, and a small
  * hook runtime that renders the real component tree as plain objects — so the
  * real `client.js` is exercised without a browser: the real drag handlers, the
- * real order state, the real save payload, and the real probe bookkeeping.
+ * real order state, the real save payload, and the real bookkeeping of both
+ * detection endpoints.
  *
  * Rows are addressed by display position throughout, because the panel writes
  * an order as a permutation of document indices: an entry with no id and two
@@ -165,14 +167,34 @@ function textOf(node) {
   return (node?.props?.children ?? []).filter((child) => typeof child === 'string').join('');
 }
 
+/** Every text node under an element, in document order — a rendered line may mix spans and text. */
+function deepTextOf(node) {
+  const parts = [];
+  const visit = (value) => {
+    if (typeof value === 'string') {
+      parts.push(value);
+      return;
+    }
+    if (value === null || value === undefined || typeof value !== 'object') return;
+    if (Array.isArray(value)) {
+      for (const child of value) visit(child);
+      return;
+    }
+    visit(value.props?.children);
+  };
+  visit(node?.props?.children);
+  return parts.join('');
+}
+
 /**
  * One panel instance over a mutable settings document.
  * @param options - the models to serve, whether the document is writable, and
- *   an optional probe answer (or a function returning one per call) to stand in
- *   for the Host half's gateway probe, and an optional write behaviour (defaults
- *   to an accepted write) to stand in for the shared form's mutate().
+ *   optional `probe`/`detect` answers (or functions returning one per call) to
+ *   stand in for the Host half's two endpoints, plus an optional write
+ *   behaviour (defaults to an accepted write) standing in for the shared form's
+ *   mutate().
  */
-function createPanel({ models, writable = true, probe, write } = {}) {
+function createPanel({ models, writable = true, probe, detect, write } = {}) {
   const React = createReact();
   let captured = null;
   new Function('window', SOURCE)({ __ModuleLoader__: { load: (module) => { captured = module; } } });
@@ -180,6 +202,7 @@ function createPanel({ models, writable = true, probe, write } = {}) {
 
   const writes = [];
   const probes = [];
+  const detects = [];
   const listeners = new Set();
   let registered = null;
   let revision = 1;
@@ -199,11 +222,18 @@ function createPanel({ models, writable = true, probe, write } = {}) {
     throw new Error(`client.js required an unexpected module: ${name}`);
   });
 
+  /**
+   * Answer one RPC call on the plugin's channel, dispatched by endpoint the way
+   * the Host half dispatches. A missing stub falls back to the "no channel"
+   * failure the real transport reports.
+   */
   const connection = {
     rpc: {
-      call: (_channel, _endpoint, payload) => {
-        probes.push(payload);
-        const answer = typeof probe === 'function' ? probe(probes.length, payload) : probe;
+      call: (_channel, endpoint, payload) => {
+        const stub = endpoint === 'detect' ? detect : probe;
+        const log = endpoint === 'detect' ? detects : probes;
+        log.push(payload);
+        const answer = typeof stub === 'function' ? stub(log.length, payload) : stub;
         return Promise.resolve(answer ?? { ok: false, error: { code: 'no-connection', message: 'this page has no connection to the Host' } });
       },
     },
@@ -211,7 +241,12 @@ function createPanel({ models, writable = true, probe, write } = {}) {
 
   const ctx = {
     effect: (fn) => fn(),
-    locale: { register: () => {}, bind: () => (key) => key },
+    // Copy lookup the way the Host's locale service does it: a missing key
+    // renders as itself, and placeholders make the copy's inputs observable.
+    locale: {
+      register: () => {},
+      bind: () => (key, params) => (params === undefined ? key : `${key} ${JSON.stringify(params)}`),
+    },
     slots: {
       inject: (_name, fn) => fn(),
       register: (spec, component) => {
@@ -248,6 +283,7 @@ function createPanel({ models, writable = true, probe, write } = {}) {
   const panel = {
     writes,
     probes,
+    detects,
     get tree() {
       return tree;
     },
@@ -290,6 +326,18 @@ function createPanel({ models, writable = true, probe, write } = {}) {
       .find((text) => text.startsWith('detect')) ?? '',
     /** Each row's note (the gateway's table, or a probe failure). */
     notes: () => panel.rows().map((row) => textOf(elements(row).find((node) => hasClass(node, 'dsh-tl-note')))),
+    /** Each row's capability line, or an empty string when detection said nothing about it. */
+    metas: () => panel.rows().map((row) => deepTextOf(elements(row).find((node) => hasClass(node, 'dsh-tl-meta')))),
+    /** The capability line's own class, so a conflict can be told from a plain fill. */
+    metaAt: (at) => elements(panel.rows()[at]).find((node) => hasClass(node, 'dsh-tl-meta')),
+    /** The "use the detected value" button in one row, when it has one. */
+    adoptAt: (at) => elements(panel.rows()[at]).find((node) => hasClass(node, 'dsh-tl-adopt')),
+    /** The capability detector's route-level line, whichever state it is in. */
+    capsText: () =>
+      elements(tree)
+        .filter((node) => hasClass(node, 'dsh-tl-hint') || hasClass(node, 'dsh-tl-error'))
+        .map(textOf)
+        .find((text) => text.startsWith('meta')) ?? '',
     chipAt: (at, level) => elements(panel.rows()[at]).find((node) => hasClass(node, 'dsh-tl-chip') && textOf(node) === `level.${level}`),
   };
   return panel;
@@ -306,6 +354,11 @@ function declaredModel(id, extra = {}) {
     reasoningEfforts: { off: null, low: 'low', medium: 'medium', high: 'high' },
     ...extra,
   };
+}
+
+/** A model entry with an id and nothing else — the case capability detection exists for. */
+function plainModel(id, extra = {}) {
+  return { id, ...extra };
 }
 
 /**
@@ -666,9 +719,9 @@ async function main() {
     },
   });
   await expand(refused);
-  check('a refused model is not read as "does not validate names"', refused.detectText() === 'detectPartial', refused.detectText());
-  check('the refused row reports its own failure', refused.notes()[0] === 'detectModelFailed', JSON.stringify(refused.notes()));
-  check('the answered row still shows its table', refused.notes()[1] === 'detected：level.low / level.high', refused.notes()[1]);
+  check('a refused model is not read as "does not validate names"', refused.detectText().startsWith('detectPartial'), refused.detectText());
+  check('the refused row reports its own failure', refused.notes()[0].startsWith('detectModelFailed'), JSON.stringify(refused.notes()));
+  check('the answered row still shows its table', refused.notes()[1] === 'detectedmeta.colonlevel.low / level.high', refused.notes()[1]);
 
   // 22b. An unreachable model is reported the same way.
   const unreachable = createPanel({
@@ -676,7 +729,7 @@ async function main() {
     probe: { ok: true, value: { results: [{ model: 'alpha', kind: 'unreachable', detail: 'fetch failed' }] } },
   });
   await expand(unreachable);
-  check('an unreachable model is reported too', unreachable.detectText() === 'detectPartial' && unreachable.notes()[0] === 'detectModelFailed');
+  check('an unreachable model is reported too', unreachable.detectText().startsWith('detectPartial') && unreachable.notes()[0].startsWith('detectModelFailed'));
 
   // 23. Only a clean answer is cached, so a failed probe is retried when the
   //     panel is opened again rather than remembered as final.
@@ -687,11 +740,11 @@ async function main() {
       : { ok: true, value: { results: [{ model: 'alpha', kind: 'levels', levels: ['low'] }] } }),
   });
   await expand(retryable);
-  check('the first probe reports the failure', retryable.detectText() === 'detectPartial', retryable.detectText());
+  check('the first probe reports the failure', retryable.detectText().startsWith('detectPartial'), retryable.detectText());
   await retryable.fire(() => retryable.summary(), (node) => node.props.onClick());
   await retryable.fire(() => retryable.summary(), (node) => node.props.onClick());
   check('a failed probe is asked again on the next visit', retryable.probes.length === 2, String(retryable.probes.length));
-  check('and the second answer is used', retryable.notes()[0] === 'detected：level.low', retryable.notes()[0]);
+  check('and the second answer is used', retryable.notes()[0] === 'detectedmeta.colonlevel.low', retryable.notes()[0]);
 
   // 24. The desktop app's update lock answers every request with a bare 503.
   //     That is a "come back in a moment", not a transport error to read.
@@ -706,7 +759,7 @@ async function main() {
   await new Promise((resolve) => setTimeout(resolve, 2700));
   await locked.render();
   check('and the panel retries by itself', locked.probes.length === 2, String(locked.probes.length));
-  check('the retry is used', locked.notes()[0] === 'detected：level.low', locked.notes()[0]);
+  check('the retry is used', locked.notes()[0] === 'detectedmeta.colonlevel.low', locked.notes()[0]);
 
   // 24b. Any other transport failure is still reported as itself.
   const broken = createPanel({
@@ -714,7 +767,7 @@ async function main() {
     probe: { ok: false, error: { code: 'transport', message: 'transport failure for /x/probe: HTTP 500' } },
   });
   await expand(broken);
-  check('another transport failure is reported as itself', broken.detectText() === 'detectFailed', broken.detectText());
+  check('another transport failure is reported as itself', broken.detectText().startsWith('detectFailed'), broken.detectText());
 
   // 24c. A channel that was never registered leaves the POST to the static
   //      handler, which answers 405 — the one failure a restart fixes.
@@ -723,7 +776,168 @@ async function main() {
     probe: { ok: false, error: { code: 'transport', message: 'transport failure for /dsh-model-thinking-levels/probe: HTTP 405' } },
   });
   await expand(missing);
-  check('a missing host channel is named as such', missing.detectText() === 'detectNoChannel', missing.detectText());
+  check('a missing host channel is named as such', missing.detectText().startsWith('detectNoChannel'), missing.detectText());
+
+  process.stdout.write('\ncapabilities — detected context, output cap, modalities, name\n');
+
+  // 25. A model entry that states nothing about itself gets the detected
+  //     context window, output cap, modalities, and display name, and a save
+  //     carries them into the document without the user typing any of it.
+  const fill = createPanel({
+    models: [declaredModel('alpha'), plainModel('bravo')],
+    probe: { ok: true, value: { results: [{ model: 'bravo', kind: 'levels', levels: ['low', 'medium', 'high'] }] } },
+    detect: {
+      ok: true,
+      value: {
+        gateway: { ok: true },
+        results: [
+          { model: 'alpha', gateway: { contextWindow: 1000, maxTokens: 100, input: ['text'] } },
+          {
+            model: 'bravo',
+            official: {
+              confidence: 'vendor',
+              provider: 'openai',
+              name: 'Bravo',
+              contextWindow: 272000,
+              maxTokens: 128000,
+              input: ['text', 'image'],
+              levels: ['low', 'medium', 'high'],
+            },
+          },
+        ],
+      },
+    },
+  });
+  await expand(fill);
+  check('the detect call names the route and its models', JSON.stringify(fill.detects[0]) === JSON.stringify({ settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'cpa'], models: ['alpha', 'bravo'] }), JSON.stringify(fill.detects[0]));
+  check('a model that already states its capabilities says nothing', fill.metas()[0] === '', fill.metas()[0]);
+  check('the detected capabilities are announced', fill.metas()[1].startsWith('metaFill'), fill.metas()[1]);
+  check('with every field named', ['272', '128', 'modality.text+modality.image', 'field.name Bravo'].every((part) => fill.metas()[1].includes(part)), fill.metas()[1]);
+  check('and the official catalog named as the source', fill.metas()[1].includes('source.official'), fill.metas()[1]);
+  check('the missing fields alone make the panel dirty', fill.save().props.disabled === false);
+  await fill.fire(() => fill.save(), (node) => node.props.onClick());
+  const filled = fill.writes.at(-1)?.[0]?.value ?? [];
+  check('the save writes the detected fields', filled[1]?.contextWindow === 272000 && filled[1]?.maxTokens === 128000, JSON.stringify(filled[1]));
+  check('the modalities are written as a pi-ai input list', same(filled[1]?.input ?? [], ['text', 'image']), JSON.stringify(filled[1]?.input));
+  check('the display name is written too', filled[1]?.name === 'Bravo', JSON.stringify(filled[1]?.name));
+  check('the model that stated its own fields keeps them', filled[0]?.contextWindow === 1000 && filled[0]?.maxTokens === 100);
+
+  // 26. A stated value is never overwritten: the disagreement is reported, and
+  //     only the explicit "use detected" action takes it over.
+  const clash = createPanel({
+    models: [declaredModel('alpha', { contextWindow: 1000000 })],
+    probe: { ok: true, value: { results: [{ model: 'alpha', kind: 'levels', levels: ['low', 'medium', 'high'] }] } },
+    detect: {
+      ok: true,
+      value: {
+        gateway: { ok: true },
+        results: [
+          {
+            model: 'alpha',
+            official: {
+              confidence: 'vendor',
+              provider: 'google',
+              name: 'Alpha',
+              contextWindow: 1048576,
+              maxTokens: 65536,
+              input: ['text', 'image'],
+              levels: ['low', 'medium', 'high'],
+            },
+          },
+        ],
+      },
+    },
+  });
+  await expand(clash);
+  check('a differing value is reported as a conflict', clash.metas()[0].startsWith('metaConflict'), clash.metas()[0]);
+  check('both the current and the detected value are shown', clash.metas()[0].includes('1,000,000') && clash.metas()[0].includes('1,048,576'), clash.metas()[0]);
+  check('a conflict alone leaves nothing to save', clash.save().props.disabled === true);
+  check('and the row offers to take the detected values', clash.adoptAt(0) !== undefined);
+  await clash.fire(() => clash.adoptAt(0), (node) => node.props.onClick());
+  check('taking them clears the conflict', clash.metas()[0].startsWith('metaAdopted'), clash.metas()[0]);
+  check('and makes the change savable', clash.save().props.disabled === false);
+  await clash.fire(() => clash.save(), (node) => node.props.onClick());
+  const clashed = clash.writes.at(-1)?.[0]?.value ?? [];
+  check('the taken value replaces the stated one', clashed[0]?.contextWindow === 1048576, JSON.stringify(clashed[0]?.contextWindow));
+  check('the other detected fields were filled at the same time', clashed[0]?.maxTokens === 65536, JSON.stringify(clashed[0]?.maxTokens));
+
+  // 27. A catalog reading nothing can rank is reported, never written.
+  const vague = createPanel({
+    models: [plainModel('charlie', { reasoningEfforts: { off: null, low: 'low', medium: 'medium', high: 'high' } })],
+    probe: { ok: true, value: { results: [{ model: 'charlie', kind: 'levels', levels: ['low', 'medium', 'high'] }] } },
+    detect: {
+      ok: true,
+      value: {
+        gateway: { ok: true },
+        results: [
+          {
+            model: 'charlie',
+            official: {
+              confidence: 'ambiguous',
+              provider: 'opencode',
+              levels: ['low', 'medium', 'high'],
+              variants: [{ contextWindow: 272000 }, { contextWindow: 1048576 }],
+            },
+          },
+        ],
+      },
+    },
+  });
+  await expand(vague);
+  check('an unranked reading is reported', vague.metas()[0].startsWith('metaAmbiguous'), vague.metas()[0]);
+  check('with the competing values named', vague.metas()[0].includes('272') && vague.metas()[0].includes('1,048,576'), vague.metas()[0]);
+  check('and nothing is filled in', vague.save().props.disabled === true);
+
+  // 28. A model the catalog calls non-reasoning stays non-reasoning even when
+  //     the gateway lists its own default table — the documented CLIProxyAPI
+  //     trap for custom providers it was never told about.
+  const nonReasoning = createPanel({
+    models: [plainModel('ghost')],
+    probe: { ok: true, value: { results: [{ model: 'ghost', kind: 'levels', levels: ['low', 'medium', 'high'] }] } },
+    detect: {
+      ok: true,
+      value: {
+        gateway: { ok: true },
+        results: [{ model: 'ghost', official: { confidence: 'agreement', provider: 'openai', levels: [] } }],
+      },
+    },
+  });
+  await expand(nonReasoning);
+  check('the catalog non-reasoning reading makes the panel dirty', nonReasoning.save().props.disabled === false);
+  await nonReasoning.fire(() => nonReasoning.save(), (node) => node.props.onClick());
+  const ghost = (nonReasoning.writes.at(-1)?.[0]?.value ?? [])[0];
+  check('and saving declares the model non-reasoning', ghost?.reasoningEfforts === false, JSON.stringify(ghost?.reasoningEfforts));
+
+  // 29. A detect call that fails leaves the level probe's answer usable and
+  //     says so once, at route level.
+  const noCaps = createPanel({
+    models: [plainModel('delta')],
+    probe: { ok: true, value: { results: [{ model: 'delta', kind: 'levels', levels: ['low', 'high'] }] } },
+    detect: { ok: false, error: { code: 'transport', message: 'transport failure for /x/detect: HTTP 500' } },
+  });
+  await expand(noCaps);
+  check('a failed capability detection says so', noCaps.capsText().startsWith('metaFailed'), noCaps.capsText());
+  check('the level probe still fills what it knows', noCaps.save().props.disabled === false);
+  await noCaps.fire(() => noCaps.save(), (node) => node.props.onClick());
+  const delta = (noCaps.writes.at(-1)?.[0]?.value ?? [])[0];
+  check('and the levels are what the gateway listed', same(Object.keys(delta?.reasoningEfforts ?? {}), ['off', 'low', 'high']), JSON.stringify(delta?.reasoningEfforts));
+
+  // 30. A gateway that discloses no listing still gets the catalog's answers,
+  //     and the route line explains where they came from.
+  const noListing = createPanel({
+    models: [plainModel('echo')],
+    probe: { ok: true, value: { results: [{ model: 'echo', kind: 'levels', levels: ['low', 'medium', 'high'] }] } },
+    detect: {
+      ok: true,
+      value: {
+        gateway: { ok: false, detail: 'https://gateway.example/v1/models answered 403' },
+        results: [{ model: 'echo', official: { confidence: 'vendor', provider: 'openai', name: 'Echo', contextWindow: 272000, maxTokens: 128000, input: ['text'], levels: ['low', 'medium', 'high'] } }],
+      },
+    },
+  });
+  await expand(noListing);
+  check('a failed listing is explained once', noListing.capsText().startsWith('metaListingFailed'), noListing.capsText());
+  check('and the catalog still fills the row', noListing.metas()[0].startsWith('metaFill'), noListing.metas()[0]);
 
   process.stdout.write(`\n${checks - failures}/${checks} checks passed\n\n`);
   process.exit(failures === 0 ? 0 : 1);

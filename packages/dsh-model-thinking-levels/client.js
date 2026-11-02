@@ -1,5 +1,5 @@
 /**
- * Thinking levels for a custom model API route.
+ * Thinking levels and detected capabilities for a custom model API route.
  *
  * `@deepseek-ai/dsh-llm-pi-ai` decides whether a model offers an Effort row
  * from the model entry's own `reasoningEfforts`. An entry without the field
@@ -27,13 +27,18 @@
  * another field of the page.
  *
  * Models that declare nothing are pre-filled with the levels an
- * OpenAI-compatible gateway accepts, so the usual flow is one click.
+ * OpenAI-compatible gateway accepts, and — where the Host can find them — with
+ * the capability fields the stock card cannot detect: context window, output
+ * cap, input modalities, and display name. A field the entry omits is filled in
+ * and saved with it; a field the entry already states is never overwritten, but
+ * a detected value that disagrees is shown next to it with an explicit "use the
+ * detected value" action.
  *
  * Scope: only routes the pi-ai adapter reports as `declared` (a route no
  * installed catalog describes). A catalog route's `models` array replaces the
  * installed catalog wholesale, so materializing it from here would silently
  * drop every catalog model; those routes already carry catalog reasoning
- * metadata.
+ * metadata and catalog capacities.
  */
 window.__ModuleLoader__.load({
   id: 'dsh-model-thinking-levels',
@@ -60,6 +65,15 @@ window.__ModuleLoader__.load({
      * refused. That lock is short-lived by nature, so one retry covers it.
      */
     const RETRY_MS = 2500;
+    /**
+     * The model-entry fields the capability detector may propose, in the order
+     * the panel reports them. They are exactly the fields the stock card shows
+     * for a hand-declared model: context window, output cap, input modalities,
+     * and the display name.
+     */
+    const CAPABILITY_FIELDS = ['contextWindow', 'maxTokens', 'input', 'name'];
+    /** The input modalities pi-ai understands, in the order they are rendered. */
+    const MODALITIES = ['text', 'image'];
 
     /**
      * Copied from the Models page's own CSS module (`.xuTnra_rowCard`,
@@ -100,6 +114,11 @@ window.__ModuleLoader__.load({
 .dsh-tl-chip:disabled{opacity:.4;cursor:default}
 .dsh-tl-chip:focus-visible{box-shadow:0 0 0 2px var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline:none}
 .dsh-tl-wire{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);overflow-wrap:anywhere}
+.dsh-tl-meta{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}
+.dsh-tl-meta-conflict{color:var(--dsw-alias-state-warn-primary)}
+.dsh-tl-adopt{box-sizing:border-box;display:inline-flex;align-items:center;height:20px;padding:0 6px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-xs);background:0 0;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;line-height:16px;cursor:pointer}
+.dsh-tl-adopt:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.dsh-tl-adopt:focus-visible{box-shadow:0 0 0 2px var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline:none}
 .dsh-tl-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px}
 .dsh-tl-status{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
 .dsh-tl-primary{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;height:28px;padding:0 10px;border:none;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground);font:inherit;font-size:12px;line-height:18px;cursor:pointer}
@@ -122,7 +141,7 @@ window.__ModuleLoader__.load({
       grip: '拖动排序',
       gripOf: '拖动排序：{id}',
       gripKeys: '拖动排序；聚焦后按 ↑ / ↓ 移动',
-      preset: '未声明的模型已按通用档位预填，确认后点保存即可。',
+      preset: '未声明的模型已按探测结果预填（档位与能力字段），确认后点保存即可。',
       detecting: '正在探测网关支持的档位…',
       detected: '网关接受',
       detectNone: '网关不接受任何思考档位，建议声明为「非推理模型」',
@@ -134,6 +153,27 @@ window.__ModuleLoader__.load({
       detectNoChannel: '宿主侧的探测通道没有注册（{detail}）。这通常意味着 Host 半没加载或没生效，重启 DSH 后再试。',
       detectModelFailed: '探测失败：{detail}',
       detectPartial: '有 {count} 个模型没探到（{detail}）；档位照常可以勾选，稍后可点「重新探测」。',
+      metaDetecting: '正在探测模型能力（网关清单 / 官方目录）…',
+      metaFailed: '能力探测失败：{detail}',
+      metaListingFailed: '网关清单读取失败（{detail}）；下面的能力信息来自官方目录。',
+      metaFill: '将补入：{fields}',
+      metaConflict: '与探测值不一致：{pairs}',
+      metaAdopt: '采用探测值',
+      metaAdopted: '已采用探测值，保存后生效',
+      metaAmbiguous: '官方目录给出多个取值（{values}），未自动填入',
+      metaSource: '来源：{source}',
+      'source.gateway': '网关清单',
+      'source.official': '官方目录（{provider}）',
+      'field.contextWindow': '上下文',
+      'field.maxTokens': '输出上限',
+      'field.input': '模态',
+      'field.name': '名称',
+      'modality.text': '文本',
+      'modality.image': '图片',
+      'meta.pair': '、',
+      'meta.colon': '：',
+      'meta.line': '；',
+      metaNoCatalog: '官方目录读不到（这个部署里找不到 pi-ai 安装），能力信息只能来自网关清单。',
       redetect: '重新探测',
       hint: '“关闭”= 不发送思考字段（pi-ai 的 off 档），交给网关自行决定；它不等同于不思考。',
       loading: '载入中…',
@@ -168,7 +208,7 @@ window.__ModuleLoader__.load({
       grip: 'Reorder',
       gripOf: 'Reorder {id}',
       gripKeys: 'Drag to reorder; focus it and press ↑ / ↓ to move',
-      preset: 'Models that declare nothing are pre-filled with the common levels. Just save.',
+      preset: 'Models that declare nothing are pre-filled from detection — levels and capability fields. Just save.',
       detecting: 'Asking the gateway which levels it accepts…',
       detected: 'Gateway accepts',
       detectNone: 'The gateway accepts no thinking level here; consider marking it non-reasoning',
@@ -180,6 +220,27 @@ window.__ModuleLoader__.load({
       detectNoChannel: 'The probe channel is not registered on the Host ({detail}). That usually means the Host half did not load — restart DSH and try again.',
       detectModelFailed: 'Detection failed: {detail}',
       detectPartial: '{count} model(s) could not be probed ({detail}); the levels stay available, and "Detect again" retries.',
+      metaDetecting: 'Detecting model capabilities (gateway listing / official catalog)…',
+      metaFailed: 'Capability detection failed: {detail}',
+      metaListingFailed: 'The gateway listing could not be read ({detail}); the capability data below comes from the official catalog.',
+      metaFill: 'Will add: {fields}',
+      metaConflict: 'Differs from the detected value: {pairs}',
+      metaAdopt: 'Use detected',
+      metaAdopted: 'Detected value adopted; save to apply',
+      metaAmbiguous: 'The official catalog gives several values ({values}), so nothing was filled in',
+      metaSource: 'Source: {source}',
+      'source.gateway': 'gateway listing',
+      'source.official': 'official catalog ({provider})',
+      'field.contextWindow': 'context',
+      'field.maxTokens': 'output cap',
+      'field.input': 'modalities',
+      'field.name': 'name',
+      'modality.text': 'text',
+      'modality.image': 'image',
+      'meta.pair': ', ',
+      'meta.colon': ': ',
+      'meta.line': '; ',
+      metaNoCatalog: 'The installed pi-ai catalog could not be read on this deployment, so capabilities come from the gateway listing alone.',
       redetect: 'Detect again',
       hint: '"Off" sends no thinking field at all (pi-ai\'s off level) and leaves the choice to the gateway; it is not a guarantee of no thinking.',
       loading: 'Loading…',
@@ -367,6 +428,159 @@ window.__ModuleLoader__.load({
       return { ...model, reasoningEfforts: valueOf(levels) };
     }
 
+    /** The modalities one declared value holds, in render order, or undefined when it states none. */
+    function modalitiesOf(value) {
+      if (!Array.isArray(value)) return undefined;
+      const found = new Set(value.filter((item) => MODALITIES.includes(item)));
+      const ordered = MODALITIES.filter((modality) => found.has(modality));
+      return ordered.length === 0 ? undefined : ordered;
+    }
+
+    /** Whether two modality lists say the same thing. */
+    function sameModalities(left, right) {
+      const leftList = left ?? [];
+      const rightList = right ?? [];
+      return leftList.length === rightList.length && leftList.every((entry, index) => entry === rightList[index]);
+    }
+
+    /** Whether two values of one capability field say the same thing. */
+    function sameCapability(field, left, right) {
+      if (left === right) return true;
+      if (field === 'input') return sameModalities(left, right);
+      return false;
+    }
+
+    /** The value one model entry states for one capability field, or undefined when it states none. */
+    function capabilityOf(model, field) {
+      if (model === null || typeof model !== 'object') return undefined;
+      if (field === 'contextWindow' || field === 'maxTokens') {
+        const value = model[field];
+        return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
+      }
+      if (field === 'input') return Array.isArray(model.input) ? modalitiesOf(model.input) : undefined;
+      if (field === 'name') return typeof model.name === 'string' && model.name.length > 0 ? model.name : undefined;
+      return undefined;
+    }
+
+    /**
+     * The capability values detection found for one model, best source first.
+     *
+     * The gateway's own listing describes the endpoint being configured, so its
+     * word wins over the installed catalog's; the catalog is what answers for a
+     * gateway that discloses only ids. An ambiguous catalog reading is not a
+     * value at all — the panel reports the competing readings instead of
+     * choosing one. The display name is the exception: a listing's name is
+     * usually just the id it serves, so the catalog's product name wins.
+     * @param row - one `detect` result row.
+     * @returns field values, and the source that supplied each.
+     */
+    function detectedOf(row) {
+      const values = {};
+      const sources = {};
+      const put = (field, value, source, provider) => {
+        if (value === undefined || value === null) return;
+        if (values[field] !== undefined) return;
+        values[field] = value;
+        sources[field] = source === 'official' && typeof provider === 'string' ? { source, provider } : { source };
+      };
+      const official = row?.official !== null && typeof row?.official === 'object' && row.official.confidence !== 'ambiguous' ? row.official : undefined;
+      if (official !== undefined) put('name', official.name, 'official', official.provider);
+      const gateway = row?.gateway;
+      if (gateway !== null && typeof gateway === 'object') {
+        for (const field of CAPABILITY_FIELDS) {
+          const value = field === 'input' ? modalitiesOf(gateway.input) : gateway[field];
+          // A listing usually spells the display name as the id it serves;
+          // writing that into `name` would fill a field and say nothing.
+          put(field, field === 'name' && value === row.model ? undefined : value, 'gateway');
+        }
+      }
+      if (official !== undefined) {
+        for (const field of CAPABILITY_FIELDS) {
+          put(field, field === 'input' ? modalitiesOf(official.input) : official[field], 'official', official.provider);
+        }
+      }
+      return { values, sources };
+    }
+
+    /**
+     * The levels detection suggests for one model, or undefined when nothing
+     * was detected.
+     *
+     * The gateway's table says what the endpoint accepts; the catalog says what
+     * the model itself supports. When both speak, their intersection is the set
+     * that both passes validation and means something — and a model the catalog
+     * calls non-reasoning keeps that reading even when the gateway lists its
+     * own default table, which is the trap CLIProxyAPI sets for custom providers
+     * it was not told about.
+     * @param table - the gateway's accepted table, when the probe produced one.
+     * @param official - the catalog reading, when the catalog knows the model.
+     * @returns levels in escalation order, or undefined to keep the generic preset.
+     */
+    function suggestedLevels(table, official) {
+      const gateway = Array.isArray(table) ? table : undefined;
+      const catalog =
+        official !== null && typeof official === 'object' && official.confidence !== 'ambiguous' && Array.isArray(official.levels)
+          ? official.levels
+          : undefined;
+      const withOff = (levels) => LEVELS.filter((level) => level === 'off' || levels.includes(level));
+      if (catalog !== undefined && catalog.length === 0) return [];
+      if (gateway !== undefined && gateway.length === 0) return [];
+      if (gateway !== undefined && catalog !== undefined) {
+        const shared = LEVELS.filter((level) => level !== 'off' && gateway.includes(level) && catalog.includes(level));
+        if (shared.length > 0) return withOff(shared);
+        const known = catalog.filter((level) => level !== 'off');
+        return known.length > 0 ? withOff(known) : [];
+      }
+      if (gateway !== undefined) return withOff(gateway);
+      if (catalog !== undefined) return withOff(catalog.filter((level) => level !== 'off'));
+      return undefined;
+    }
+
+    /**
+     * What one model row would change if the detected capabilities were applied.
+     *
+     * A field the entry omits is filled in; a field it states is compared, and
+     * a disagreement is reported for the user to decide on. `adopted` holds the
+     * conflicts the user explicitly took over, keyed by model id then field.
+     * @param model - the model entry as the document states it.
+     * @param row - its `detect` result, when detection answered for it.
+     * @param adopted - the conflicts the user already chose to overwrite.
+     * @returns the values that would be written, the disagreements to show, and
+     *   the catalog readings that could not be ranked.
+     */
+    function planOf(model, row, adopted) {
+      const fills = [];
+      const conflicts = [];
+      const id = idOf(model);
+      if (id.length === 0 || row === undefined) return { fills, conflicts, ambiguous: undefined };
+      const { values, sources } = detectedOf(row);
+      const taken = adopted?.[id] ?? {};
+      for (const field of CAPABILITY_FIELDS) {
+        const value = values[field];
+        if (value === undefined) continue;
+        const current = capabilityOf(model, field);
+        if (current === undefined) {
+          fills.push({ field, value, source: sources[field], auto: true });
+          continue;
+        }
+        const chosen = taken[field];
+        if (chosen !== undefined && !sameCapability(field, chosen, current)) {
+          fills.push({ field, value: chosen, source: sources[field], adopted: true });
+          continue;
+        }
+        if (!sameCapability(field, current, value)) conflicts.push({ field, current, detected: value, source: sources[field] });
+      }
+      const variants = row.official?.confidence === 'ambiguous' && Array.isArray(row.official.variants) ? row.official.variants : undefined;
+      return { fills, conflicts, ambiguous: variants };
+    }
+
+    /** The model-entry fields these fills write. */
+    function fieldsOf(fills) {
+      const fields = {};
+      for (const fill of fills) fields[fill.field] = fill.value;
+      return fields;
+    }
+
     /**
      * The editable draft of every named model, keyed by model id. A model that
      * declares nothing starts at the recommended levels so the common case is
@@ -384,6 +598,13 @@ window.__ModuleLoader__.load({
 
     /** Level tables already asked of one gateway, keyed by route and model set. */
     const detectionCache = new Map();
+
+    /**
+     * Capability detection already answered for one route, keyed the same way.
+     * The gateway listing costs one request and the catalog lookup is local, so
+     * one answer per route and model set lasts a session.
+     */
+    const capabilityCache = new Map();
 
     /** Whether two level lists hold the same levels. */
     function sameLevels(left, right) {
@@ -412,6 +633,24 @@ window.__ModuleLoader__.load({
       // each answer back into that mirror.
       const mirror = ctx.configForms.describe();
       const form = ctx.configForms.get(SETTINGS_NS);
+      /**
+       * One call on the Host half's channel.
+       *
+       * Resolved at call time rather than at apply time, so the panel still
+       * renders on a page whose connection service arrives late. Always
+       * resolves to an RPC result — `{ ok: true, value }` or
+       * `{ ok: false, error }` — and never throws.
+       */
+      const call = (endpoint, payload) => {
+        const connection = typeof ctx.get === 'function' ? ctx.get('connection') : undefined;
+        if (connection === undefined || typeof connection.rpc?.call !== 'function') {
+          return Promise.resolve({ ok: false, error: { code: 'no-connection', message: 'this page has no connection to the Host' } });
+        }
+        return Promise.resolve(connection.rpc.call(PROBE_CHANNEL, endpoint, payload)).catch((error) => ({
+          ok: false,
+          error: { code: 'transport', message: String(error?.message ?? error) },
+        }));
+      };
       return {
         t,
         snapshot: () => mirror.getSnapshot(),
@@ -445,22 +684,15 @@ window.__ModuleLoader__.load({
         },
         /**
          * Ask the Host half which levels this route's gateway accepts.
-         *
-         * Resolved at call time rather than at apply time, so the panel still
-         * renders on a page whose connection service arrives late. Always
-         * resolves to an RPC result — `{ ok: true, value }` or
-         * `{ ok: false, error }` — and never throws.
+         * @param payload - the route and the model ids to ask about.
          */
-        probe: (payload) => {
-          const connection = typeof ctx.get === 'function' ? ctx.get('connection') : undefined;
-          if (connection === undefined || typeof connection.rpc?.call !== 'function') {
-            return Promise.resolve({ ok: false, error: { code: 'no-connection', message: 'this page has no connection to the Host' } });
-          }
-          return Promise.resolve(connection.rpc.call(PROBE_CHANNEL, 'probe', payload)).catch((error) => ({
-            ok: false,
-            error: { code: 'transport', message: String(error?.message ?? error) },
-          }));
-        },
+        probe: (payload) => call('probe', payload),
+        /**
+         * Ask the Host half what else it can detect about these models: the
+         * endpoint's own listing, and the installed catalog's row for each id.
+         * @param payload - the route and the model ids to describe.
+         */
+        detect: (payload) => call('detect', payload),
       };
     }
 
@@ -487,7 +719,17 @@ window.__ModuleLoader__.load({
       // What the gateway said about this route, and a nonce that forces a fresh
       // ask when the user does not believe the cached answer.
       const [detect, setDetect] = React.useState({ status: 'idle' });
+      // What the Host could detect about the models themselves — the endpoint's
+      // own listing and the installed catalog's row for each id.
+      const [caps, setCaps] = React.useState({ status: 'idle' });
+      // The conflicts the user chose to overwrite with a detected value, keyed
+      // by model id then field. Reset with the document, like the drafts.
+      const [adopted, setAdopted] = React.useState(null);
       const [nonce, setNonce] = React.useState(0);
+      // Ids whose levels this panel filled from detection, so a later, more
+      // specific answer may refine them while a hand-picked set never gets
+      // rewritten.
+      const autoLevels = React.useRef(new Set());
       // null follows the document: open while a model still declares nothing,
       // closed once every model has decided.
       const [manual, setManual] = React.useState(null);
@@ -538,6 +780,8 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         if (!ready) return;
         setDraft(draftsOf(models));
+        setAdopted(null);
+        autoLevels.current = new Set();
         setOrder(null);
         dragRef.current = null;
         setDragId(null);
@@ -549,7 +793,11 @@ window.__ModuleLoader__.load({
       // the read has not answered, closed once every model has decided.
       const expanded = manual ?? (undeclared || pending || unavailable);
 
-      const detectKey = `${SETTINGS_NS}|${pathKey}|${modelKey}`;
+      // The key carries the endpoint and protocol as well as the model set: a
+      // baseURL or api edit on the same route serves different models with
+      // different capabilities, and a session cache keyed only by ids would
+      // replay the old gateway's answer.
+      const detectKey = `${SETTINGS_NS}|${pathKey}|${modelKey}|${String(profile?.baseURL ?? '')}|${String(profile?.api ?? '')}`;
 
       // Ask the gateway once per route and model set. It is the only authority
       // on which levels a model really has: the profile declares them, the
@@ -617,12 +865,45 @@ window.__ModuleLoader__.load({
         };
       }, [expanded, ready, detectKey, nonce]);
 
-      // Let the gateway's table refine the generic preset. Only a model that
-      // declares nothing and still sits exactly on that preset is rewritten, so
-      // a level the user picked by hand — or a level the document already
-      // decided — survives detection.
+      // Ask the Host what else it knows about these models: the endpoint's own
+      // listing, and the installed pi-ai catalog's row for each id. Unlike the
+      // level probe this costs one listing request plus a local lookup, so it
+      // runs beside the probe and caches its answer the same way.
       React.useEffect(() => {
-        if (detect.status !== 'ready') return;
+        if (!expanded || !ready || modelIds.length === 0) return undefined;
+        const cached = capabilityCache.get(detectKey);
+        if (cached !== undefined) {
+          setCaps({ status: 'ready', byModel: cached.byModel, gateway: cached.gateway, catalog: cached.catalog });
+          return undefined;
+        }
+        let live = true;
+        setCaps({ status: 'loading' });
+        api.detect({ settingsNs: SETTINGS_NS, settingsPath, models: modelIds }).then((answer) => {
+          if (!live) return;
+          if (answer?.ok !== true) {
+            setCaps({ status: 'error', detail: answer?.error?.message ?? 'unknown' });
+            return;
+          }
+          const byModel = {};
+          for (const entry of answer.value?.results ?? []) {
+            if (typeof entry?.model === 'string' && entry.model.length > 0) byModel[entry.model] = entry;
+          }
+          const value = { byModel, gateway: answer.value?.gateway, catalog: answer.value?.catalog };
+          capabilityCache.set(detectKey, value);
+          setCaps({ status: 'ready', ...value });
+        });
+        return () => {
+          live = false;
+        };
+      }, [expanded, ready, detectKey, nonce]);
+
+      // Let detection refine the generic preset. A model that declares nothing
+      // is pre-filled with the levels the gateway's table and the catalog agree
+      // on; one that already declares something is left alone, and so is a set
+      // the user picked by hand. A later answer — the catalog arriving after the
+      // probe — may refine only a set this panel filled itself.
+      React.useEffect(() => {
+        if (detect.status !== 'ready' && caps.status !== 'ready') return;
         setDraft((current) => {
           if (current === null) return current;
           let changed = false;
@@ -630,15 +911,30 @@ window.__ModuleLoader__.load({
           for (const model of models) {
             const id = idOf(model);
             if (id.length === 0 || model.reasoningEfforts !== undefined) continue;
-            const table = detect.byModel?.[id];
-            if (table === undefined || sameLevels(next[id] ?? [], table)) continue;
-            if (!sameLevels(next[id] ?? [], RECOMMENDED)) continue;
+            const table = suggestedLevels(detect.byModel?.[id], caps.byModel?.[id]?.official);
+            if (table === undefined) continue;
+            const held = next[id] ?? [];
+            if (sameLevels(held, table)) {
+              autoLevels.current.add(id);
+              continue;
+            }
+            if (!sameLevels(held, RECOMMENDED) && !autoLevels.current.has(id)) continue;
             next[id] = [...table];
+            autoLevels.current.add(id);
             changed = true;
           }
           return changed ? next : current;
         });
-      }, [detect]);
+      }, [detect, caps, ready, revision, modelKey]);
+
+      // What capability detection would change in each row, recomputed from the
+      // document as it is now: missing fields are filled on save, stated fields
+      // are only compared, and a disagreement waits for the user's say-so.
+      const plans = new Map();
+      if (caps.status === 'ready') {
+        for (const model of models) plans.set(model, planOf(model, caps.byModel?.[idOf(model)], adopted));
+      }
+      const capsDirty = models.some((model) => (plans.get(model)?.fills.length ?? 0) > 0);
 
       const levelsDirty =
         draft !== null &&
@@ -651,15 +947,27 @@ window.__ModuleLoader__.load({
       // an order that happens to be the document's own sequence — including one
       // dragged back by hand — is not a change to save.
       const orderDirty = ordered.some((row, at) => row.index !== at);
-      const dirty = levelsDirty || orderDirty;
+      const dirty = levelsDirty || orderDirty || capsDirty;
 
       const toggle = (id, level) => {
         setWrite({ status: 'idle' });
+        // A hand-picked set is the user's answer for this model; a later
+        // detection pass must not overwrite it.
+        autoLevels.current.delete(id);
         setDraft((current) => {
           const held = current?.[id] ?? [];
           const chosen = held.includes(level) ? held.filter((entry) => entry !== level) : [...held, level];
           return { ...current, [id]: LEVELS.filter((entry) => chosen.includes(entry)) };
         });
+      };
+
+      /** Take the detected values behind one row's disagreements, into the draft. */
+      const adopt = (id, plan) => {
+        if (id.length === 0 || plan === undefined || plan.conflicts.length === 0) return;
+        const values = {};
+        for (const conflict of plan.conflicts) values[conflict.field] = conflict.detected;
+        setWrite({ status: 'idle' });
+        setAdopted((current) => ({ ...(current ?? {}), [id]: { ...(current?.[id] ?? {}), ...values } }));
       };
 
       /**
@@ -781,7 +1089,18 @@ window.__ModuleLoader__.load({
         setWrite({ status: 'saving' });
         const next = ordered.map(({ model }) => {
           const id = idOf(model);
-          return id.length > 0 && draft?.[id] !== undefined ? withLevels(model, draft[id]) : model;
+          if (id.length === 0) return model;
+          // Rewrite the levels only when they really differ: `withLevels`
+          // re-spells every level from its id, and a hand-written wire value
+          // (a gateway that maps "low" to something else) must survive a write
+          // that was only adding a context window.
+          const levelsChanged = draft?.[id] !== undefined && !sameDeclared(valueOf(draft[id]), model.reasoningEfforts);
+          const entry = levelsChanged ? withLevels(model, draft[id]) : model;
+          // Detected capabilities ride the same write: the fields the entry
+          // omits are filled in, and the disagreements the user took over are
+          // overwritten. A conflict left alone keeps the entry's own value.
+          const fills = plans.get(model)?.fills ?? [];
+          return fills.length === 0 ? entry : { ...entry, ...fieldsOf(fills) };
         });
         const accepted = await api.write([{ op: 'set', path: [...settingsPath, 'models'], value: next }]);
         setWrite(accepted ? { status: 'saved' } : { status: 'error' });
@@ -818,7 +1137,7 @@ window.__ModuleLoader__.load({
         if (table === undefined) return '';
         const named = table.filter((level) => level !== 'off');
         if (named.length === 0) return t('detectNone');
-        return `${t('detected')}：${named.map((level) => t(`level.${level}`)).join(' / ')}`;
+        return `${t('detected')}${t('meta.colon')}${named.map((level) => t(`level.${level}`)).join(' / ')}`;
       };
 
       /**
@@ -842,6 +1161,66 @@ window.__ModuleLoader__.load({
         const tables = modelIds.map((id) => detect.byModel?.[id]).filter((table) => Array.isArray(table));
         return tables.length === 0 ? t('detectUnchecked') : t('detectCaveat');
       })();
+
+      /**
+       * The route-level line for capability detection: a pending ask, a
+       * failure, or the one state worth explaining — the endpoint disclosed no
+       * listing, so what follows comes from the installed catalog alone.
+       */
+      const capsText = (() => {
+        if (caps.status === 'loading') return t('metaDetecting');
+        if (caps.status === 'error') return t('metaFailed', { detail: caps.detail });
+        if (caps.status === 'ready' && caps.gateway?.ok === false) return t('metaListingFailed', { detail: caps.gateway.detail ?? '' });
+        if (caps.status === 'ready' && caps.catalog?.ok === false) return t('metaNoCatalog');
+        return '';
+      })();
+
+      /** One capability value as the row renders it. */
+      const formatCapability = (field, value) => {
+        if (field === 'input') return (value ?? []).map((modality) => t(`modality.${modality}`)).join('+');
+        if (field === 'contextWindow' || field === 'maxTokens') return Number(value).toLocaleString();
+        return String(value);
+      };
+
+      /** Where one fill or conflict came from, as the row names it. */
+      const sourceLabel = (source) => {
+        if (source?.source === 'official' && typeof source.provider === 'string') return t('source.official', { provider: source.provider });
+        return t('source.gateway');
+      };
+
+      /**
+       * What capability detection would do with one row, as the line under its
+       * chips. The fills are what a save writes; the conflicts are the ones the
+       * user may take over with one click; the ambiguous readings are reported
+       * because nothing ranked them.
+       */
+      const metaFor = (plan) => {
+        if (plan === undefined) return undefined;
+        const parts = [];
+        const fillText = (fills) =>
+          fills.map((fill) => `${t(`field.${fill.field}`)} ${formatCapability(fill.field, fill.value)}`).join(t('meta.pair'));
+        const auto = plan.fills.filter((fill) => fill.adopted !== true);
+        const taken = plan.fills.filter((fill) => fill.adopted === true);
+        if (auto.length > 0) parts.push(t('metaFill', { fields: fillText(auto) }));
+        if (taken.length > 0) parts.push(`${t('metaAdopted')}${t('meta.colon')}${fillText(taken)}`);
+        if (plan.conflicts.length > 0) {
+          const pairs = plan.conflicts
+            .map((conflict) => `${t(`field.${conflict.field}`)} ${formatCapability(conflict.field, conflict.current)} → ${formatCapability(conflict.field, conflict.detected)}`)
+            .join(t('meta.pair'));
+          parts.push(t('metaConflict', { pairs }));
+        }
+        if (plan.ambiguous !== undefined && plan.fills.length === 0 && plan.conflicts.length === 0) {
+          const values = plan.ambiguous
+            .filter((variant) => variant.contextWindow !== undefined)
+            .map((variant) => formatCapability('contextWindow', variant.contextWindow))
+            .join(' / ');
+          if (values.length > 0) parts.push(t('metaAmbiguous', { values }));
+        }
+        if (parts.length === 0) return undefined;
+        const sources = [...new Set([...plan.fills, ...plan.conflicts].map((entry) => sourceLabel(entry.source)))];
+        if (sources.length > 0) parts.push(t('metaSource', { source: sources.join(' / ') }));
+        return { text: parts.join(t('meta.line')), conflict: plan.conflicts.length > 0 };
+      };
 
       const statusText =
         write.status === 'saving'
@@ -891,6 +1270,9 @@ window.__ModuleLoader__.load({
               detectText.length === 0
                 ? null
                 : h('p', { className: detect.status === 'error' ? 'dsh-tl-error' : 'dsh-tl-hint' }, detectText),
+              capsText.length === 0
+                ? null
+                : h('p', { className: caps.status === 'error' ? 'dsh-tl-error' : 'dsh-tl-hint' }, capsText),
               ready
                 ? ordered.map(({ model, index }, at) => {
                     const id = idOf(model);
@@ -898,6 +1280,8 @@ window.__ModuleLoader__.load({
                     const held = named ? draft?.[id] ?? levelsOf(model) : [];
                     const declared = valueOf(held);
                     const note = named ? noteFor(id) : '';
+                    const plan = named ? plans.get(model) : undefined;
+                    const meta = plan === undefined ? undefined : metaFor(plan);
                     // Every row is addressable — by its document index, not by
                     // its id — so an entry without an id can move too; only a
                     // read-only document has nowhere to put an order. The key
@@ -951,6 +1335,16 @@ window.__ModuleLoader__.load({
                           );
                         }),
                       ),
+                      meta === undefined
+                        ? null
+                        : h(
+                            'div',
+                            { className: meta.conflict ? 'dsh-tl-meta dsh-tl-meta-conflict' : 'dsh-tl-meta' },
+                            h('span', null, meta.text),
+                            meta.conflict && writable
+                              ? h('button', { type: 'button', className: 'dsh-tl-adopt', onClick: () => adopt(id, plan) }, t('metaAdopt'))
+                              : null,
+                          ),
                       // Quiet while the model keeps the recommended levels; the
                       // exact wire value matters once it departs from them.
                       sameLevels(held, RECOMMENDED)
@@ -984,6 +1378,8 @@ window.__ModuleLoader__.load({
                         className: 'dsh-tl-link',
                         onClick: () => {
                           detectionCache.delete(detectKey);
+                          capabilityCache.delete(detectKey);
+                          setAdopted(null);
                           busyRetried.current = false;
                           setNonce((value) => value + 1);
                         },

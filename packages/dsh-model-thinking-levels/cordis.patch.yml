@@ -1,6 +1,8 @@
 # Host half of the bundle. `index.js` serves one RPC channel
-# (`/dsh-model-thinking-levels`) that answers which thinking levels a route's
-# gateway accepts; the Client half registers into the
+# (`/dsh-model-thinking-levels`) with two endpoints: `probe` answers which
+# thinking levels a route's gateway accepts, and `detect` answers what else can
+# be known about its models (the endpoint's own listing, plus the installed
+# pi-ai catalog's row for each id). The Client half registers into the
 # `settings.models.provider-card` seat that
 # @deepseek-ai/dsh-client-ui-settings-models declares and calls that channel.
 - insert:

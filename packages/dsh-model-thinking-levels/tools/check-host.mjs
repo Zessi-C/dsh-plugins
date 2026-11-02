@@ -52,8 +52,15 @@ function findCheckout() {
   const candidates = [at === -1 ? undefined : process.argv[at + 1], process.env.DSH_CHECKOUT];
   for (const candidate of candidates) {
     if (candidate === undefined || candidate.length === 0) continue;
-    const packages = join(candidate, 'node_modules', '@deepseek-ai');
-    if (existsSync(join(packages, 'cordis', 'lib', 'index.js'))) return packages;
+    // A checkout keeps the packages at its top level; a global npm install
+    // keeps them under the dsh package's own node_modules.
+    const layouts = [
+      join(candidate, 'node_modules', '@deepseek-ai'),
+      join(candidate, 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai'),
+    ];
+    for (const packages of layouts) {
+      if (existsSync(join(packages, 'cordis', 'lib', 'index.js'))) return packages;
+    }
   }
   return undefined;
 }

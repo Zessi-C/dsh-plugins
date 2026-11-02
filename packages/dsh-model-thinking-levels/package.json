@@ -1,9 +1,9 @@
 {
   "name": "dsh-model-thinking-levels",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "private": true,
   "type": "module",
-  "description": "Expose per-model thinking levels (reasoningEfforts) and manual model ordering inside the Models settings card for a custom model API route.",
+  "description": "Expose per-model thinking levels (reasoningEfforts), model ordering, and detected capability fields (context window, output cap, modalities, display name) inside the Models settings card for a custom model API route.",
   "license": "MIT",
   "author": "Zessi-C",
   "repository": {
@@ -16,7 +16,10 @@
     "deepseek-harness",
     "settings",
     "models",
-    "reasoning-effort"
+    "reasoning-effort",
+    "capabilities",
+    "context-window",
+    "modalities"
   ],
   "exports": {
     ".": "./index.js",
