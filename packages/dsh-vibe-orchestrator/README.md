@@ -23,9 +23,19 @@ delegates to, not selectable modes.
 | `good` | `cpa/gemini-3.8-flash-high` | full working toolset | design, debugging, judgement |
 | `expert` | `cpa/gpt-6.1-sol` | reads everything, writes new plans | advice on hard problems |
 
-The director keeps reading and routing tools only. `write`, `edit`, `bash`, and
-`pwsh` are removed from its visible set *and* blocked by an execution guard, so it
-cannot drift into doing the work.
+The director's tool scope is narrowed to a strict whitelist: `read`, `glob`, `grep`,
+`todo_write`, the three `vibe_*` tools (`vibe_fast`, `vibe_good`, `vibe_expert`),
+`vibe_runs`, `send_message`, `interrupt_agent`, `list_agents`, and `ask_user_question`.
+All other tools (including mutating tools `write`/`edit`/`bash`/`pwsh`, web tools,
+delivery tools like `present`, and Agent Teams tools) are stripped from the director,
+and mutations are blocked by an execution guard to prevent direct execution.
+
+### Route precheck
+
+Delegating to any tier now performs a **route precheck**: the Host `llm` service
+checks whether the provider/model is available. If unavailable, delegation is rejected
+immediately with the original error; pass `force: true` to bypass. Precheck results
+are cached per route for 10 minutes.
 
 ## How it works
 
@@ -34,7 +44,7 @@ inherits that preset. The Host row then shapes each Agent by its role:
 
 | Agent | Persona | Boundary applied |
 |---|---|---|
-| root session | director | mutating tools removed, three `vibe_*` tools added |
+| root session | director | Whitelist narrowed: keeps only `read`, `glob`, `grep`, `todo_write`, three `vibe_*`, `vibe_runs`, `send_message`, `interrupt_agent`, `list_agents`, `ask_user_question`; all other tools (mutating, web, present, team tools, etc.) stripped |
 | `fast` worker | fast worker | unchanged |
 | `good` worker | good worker | unchanged |
 | `expert` worker | expert | `edit`, `bash`, `pwsh` removed |
@@ -50,6 +60,23 @@ Shaping is driven by two events, because a Session can join the preset either wa
 - `agent-preset/selected` — a blank Session switched to the preset afterwards.
 
 Selecting any other preset unwinds everything the row installed.
+
+### Structured completion receipts
+
+Completion receipts are now **structured**: before finishing, a worker must call
+`structured_output`, submitting `{state, summary, files?, verification?, question?}`:
+
+- `ready`: completed and self-verified;
+- `blocked`: requires human decision (must include `question`);
+- `failed`: unable to finish (includes reason).
+
+Note: omitting `structured_output` ends in an error, which is a deliberate failure
+mode to prevent workers from exiting silently without accounting for deliverables.
+
+### Read-only ledger `vibe_runs`
+
+A new read-only tool, `vibe_runs`, lists the delegation ledger for this session
+(tier, model, label, status, stopReason, structured receipt summary).
 
 ### Why not Agent Teams
 
@@ -85,14 +112,15 @@ The director persona and the tier tool descriptions adapt omp's Vibe mode:
 worker flavor descriptions, the direction rules, and the duty to verify a worker's
 claim by reading the files it touched all come from there.
 
-Four things differ, each deliberately:
+Five things differ, each deliberately:
 
 | omp | here | why |
 |---|---|---|
 | two tiers | three | the `expert` advisory tier is this plugin's addition |
 | `vibe_send` / `vibe_kill` / `vibe_list` | `send_message` / `interrupt_agent` / `list_agents` | dsh's own worker controls |
 | `vibe_wait` | absent | dsh delivers a worker's result as a completion notice |
-| director may only `read` | director may also `glob` and `grep` | read-only searching in the parent avoids a worker round trip for every lookup |
+| director may only `read` | director retains retrieval and orchestration whitelist | read-only searching in the parent avoids a worker round trip for every lookup; adds `vibe_runs` ledger and `ask_user_question` |
+| prose receipts | structured receipts (`structured_output`) | machine-readable state and mandatory self-verification; ending without structured output is treated as error |
 
 ## Install
 
@@ -134,6 +162,7 @@ with no Host restart.
 | File | Role |
 |---|---|
 | `lib/index.js` | Host half: tier tools, per-Agent shaping, the volatile routes |
+| `vibe_runs` | Read-only ledger tool listing delegation history in this session; provided by `lib/index.js` |
 | `lib/copy.js` | Director and worker personas, tier tool descriptions |
 | `lib/dsh.js` | Resolves the Host's own `@deepseek-ai/*` packages |
 | `lib/client.js` | The **Plugins → Vibe** page |
@@ -145,12 +174,13 @@ with no Host restart.
 |---|---|---|
 | Activation | `/vibe` toggles a live session; blocked while plan or goal mode is on | an Agent preset chosen per Session; plan and goal tools are simply absent |
 | Persistence | mode-change event in the session log | the Session header records the preset |
-| Director tools | toolset *replaced* by `read` (+ optional `todo`) and five vibe tools; not even `grep` | preset mounts the full set; the row removes the mutating four and adds three tier tools, keeping `glob` and `grep` |
+| Director tools | toolset *replaced* by `read` (+ optional `todo`) and five vibe tools; not even `grep` | Whitelist narrowed: `read`, `glob`, `grep`, `todo_write`, 3 `vibe_*` tools, `vibe_runs`, `send_message`, `interrupt_agent`, `list_agents`, `ask_user_question`; mutating, web, present, and team tools stripped |
 | Tiers | two (`fast`, `good`), differing by bundled agent and model | three, differing by model, persona, and tool boundary |
 | Expert advisory tier | none | `expert`, no shell, may write plans |
 | Worker reuse | one persistent session per workstream; never respawn | the same rule, stated in the persona and the tool descriptions; `send_message` continues a worker |
 | Waiting | `vibe_wait` blocks until a worker's turn ends | none needed: dsh pushes a completion notice |
 | Stopping a worker | `vibe_kill` | `interrupt_agent`, which keeps the inbox |
+| Completion receipt | Free-form prose responses or summaries | Enforced structured tool: worker must call `structured_output` with state and summary; omitting it fails with error |
 | Mode exit | kills every worker session and tombstones it | capacity returns per worker as it settles; no kill-all needed |
 | Route configuration | `modelRoles` / `task.agentModelOverrides` in the config file | a live settings page in the UI |
 
@@ -163,10 +193,17 @@ Verified on dsh `0.2.1-rc.2`:
 - the composed preset carries the full working tool set;
 - the settings page renders (Host framing, tiers, pickers, Save).
 
-Not verified by the author: the rendered result of the newest picker menus. They
-use primitives whose export names and props were checked against the served client
-bundle (`Menu`, `MenuGroup`, `MenuItemButton`, `Button`, and the check and chevron
-icons), but the authoring environment had no browser control.
+Implemented, but not yet verified in live sessions:
+
+- Route precheck: checks provider/model availability via Host `llm` service, rejects immediately with original error, bypassable via `force: true`, 10-minute cache per route;
+- New read-only ledger tool `vibe_runs`: lists delegations in the current session (tier, model, label, status, stopReason, structured receipt summary);
+- Structured completion receipts: worker must call `structured_output` before finishing (`ready` / `blocked` / `failed`); omitting `structured_output` ends in an error;
+- Director tool scope narrowed to whitelist: `read`, `glob`, `grep`, `todo_write`, three `vibe_*`, `vibe_runs`, `send_message`, `interrupt_agent`, `list_agents`, `ask_user_question` (mutating, web, present, and team tools stripped).
+
+Not verified by the author:
+
+- Subagent addressable continuation is unverified in this deployment;
+- The rendered result of the newest picker menus. They use primitives whose export names and props were checked against the served client bundle (`Menu`, `MenuGroup`, `MenuItemButton`, `Button`, and the check and chevron icons), but the authoring environment had no browser control.
 
 ## License
 

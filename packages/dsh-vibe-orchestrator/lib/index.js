@@ -7,7 +7,7 @@
  *
  * | Agent                           | persona      | tools                                                    |
  * |---------------------------------|--------------|----------------------------------------------------------|
- * | root session (the orchestrator)  | orchestrator | read-only; the three `vibe_*` delegation tools           |
+ * | root session (the orchestrator)  | orchestrator | allowlist: read/glob/grep/todo_write, the `vibe_*` tools, agent messaging |
  * | child delegated by `vibe_fast`   | fast worker  | full working toolset                                     |
  * | child delegated by `vibe_good`   | good worker  | full working toolset                                     |
  * | child delegated by `vibe_expert` | expert       | full read, may write new files, cannot edit or run shell |
@@ -39,12 +39,93 @@ export const PRESET_ID = 'vibe'
 /** Loader entry id that owns the tier routes. */
 export const SETTINGS_ENTRY_ID = 'vibe-orchestrator'
 
-/** Tools the orchestrator may not run, and the tools the expert may not run. */
-const ORCHESTRATOR_DENY = ['write', 'edit', 'bash', 'pwsh']
+/**
+ * Tools the orchestrator may run: reading the workspace, planning, and the
+ * delegation surface itself. Everything else is denied, so a tool this file has
+ * never heard of is out of reach too.
+ */
+const ORCHESTRATOR_ALLOW = new Set([
+  'read', 'glob', 'grep', 'todo_write',
+  'vibe_fast', 'vibe_good', 'vibe_expert', 'vibe_runs',
+  'send_message', 'interrupt_agent', 'list_agents',
+  'ask_user_question',
+])
+
+/** Tools the expert may not run. */
 const EXPERT_DENY = ['edit', 'bash', 'pwsh']
 
 /** Persona role per tier. */
 const ROLE_OF_TIER = { fast: 'fast', good: 'good', expert: 'expert' }
+
+/**
+ * The structured receipt every delegated worker is asked to return.
+ *
+ * `state` names its scalar type explicitly: the enforced JSON Schema subset
+ * rejects an `enum` that is not declared beside a scalar `type`.
+ */
+const RECEIPT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    state: { type: 'string', enum: ['ready', 'blocked', 'failed'] },
+    summary: { type: 'string' },
+    files: { type: 'array', items: { type: 'string' } },
+    verification: { type: 'string' },
+    question: { type: 'string' },
+  },
+  required: ['state', 'summary'],
+}
+
+/** What `vibe_runs` returns: one normalized row per recorded dispatch. */
+const RUNS_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    kind: { type: 'string', const: 'runs' },
+    count: { type: 'integer' },
+    runs: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          id: { type: 'string' },
+          tier: { type: 'string' },
+          model: { type: 'string' },
+          label: { type: 'string' },
+          task: { type: 'string' },
+          state: { type: 'string' },
+          stopReason: { type: 'string' },
+          structuredState: { type: 'string' },
+          files: { type: 'integer' },
+          diagnostic: { type: 'string' },
+          startedAt: { type: 'string' },
+          endedAt: { type: 'string' },
+        },
+        required: ['id', 'tier', 'model', 'label', 'state'],
+      },
+    },
+  },
+  required: ['kind', 'count', 'runs'],
+}
+
+/** How long one route verdict is reused before the runtime is asked again. */
+const PREFLIGHT_TTL_MS = 10 * 60 * 1000
+
+/** Route key → its cached verdict; `error` is present when the route is unusable. */
+const routeChecks = new Map()
+
+/** Orchestrator Session id → its dispatch ledger, oldest entry first. */
+const RUNS = new Map()
+
+/** Terminal stop reason → the ledger state it is recorded as. */
+const RUN_STATE = {
+  completed: 'completed',
+  error: 'failed',
+  aborted: 'aborted',
+  'max-tokens': 'max-tokens',
+  refusal: 'refusal',
+}
 
 /**
  * Live tier routes. Every field is `volatile()`, so the Settings page edits them
@@ -95,6 +176,165 @@ function routes(config) {
   }
 }
 
+/** The message of an unknown thrown value. */
+function messageOf(error) {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * Shorten one free-text ledger field.
+ * @param {unknown} value
+ * @param {number} limit - Maximum retained characters.
+ * @returns {string|undefined} The trimmed text, or undefined when it is empty.
+ */
+function clip(value, limit) {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return undefined
+  return trimmed.length <= limit ? trimmed : `${trimmed.slice(0, limit - 1)}…`
+}
+
+/**
+ * Confirm the LLM runtime can serve one route before a child is created.
+ *
+ * `resolveCallConfig` is the runtime's own admission check: it resolves the
+ * provider adapter, the exact model, and the reasoning effort, so an unusable
+ * route fails here with the runtime's diagnostic instead of becoming a child
+ * that can never produce a turn. The verdict is cached briefly because the
+ * Settings page can change a route at any moment.
+ *
+ * A deployment that does not mount the `llm` service is not preflighted at all:
+ * the dispatch then behaves exactly as it did before this check existed.
+ * @param {object} ctx - Context that resolves the `llm` service.
+ * @param {{provider: string, model: string, reasoningEffort?: string}} route
+ * @param {AbortSignal|undefined} signal
+ * @returns {Promise<void>} Resolves when the route is usable.
+ */
+async function preflightRoute(ctx, route, signal) {
+  const llm = ctx.get('llm')
+  if (llm === undefined || typeof llm.resolveCallConfig !== 'function') return
+  const key = `${route.provider}/${route.model}/${route.reasoningEffort ?? '-'}`
+  const cached = routeChecks.get(key)
+  if (cached !== undefined && cached.expiresAt > Date.now()) {
+    if (cached.error === undefined) return
+    throw cached.error
+  }
+  try {
+    await llm.resolveCallConfig(
+      {
+        provider: route.provider,
+        model: route.model,
+        ...(route.reasoningEffort === undefined ? {} : { reasoningEffort: route.reasoningEffort }),
+      },
+      signal,
+    )
+    routeChecks.set(key, { expiresAt: Date.now() + PREFLIGHT_TTL_MS })
+  } catch (error) {
+    routeChecks.set(key, { expiresAt: Date.now() + PREFLIGHT_TTL_MS, error })
+    throw error
+  }
+}
+
+/**
+ * Append one dispatch to its orchestrator's ledger.
+ * @param {string} parentId - Orchestrator Session id.
+ * @param {object} entry - Ledger fields to record.
+ * @returns {object} The live entry, which its result promise fills in later.
+ */
+function openRun(parentId, entry) {
+  const bucket = RUNS.get(parentId) ?? []
+  const run = { id: '', ...entry }
+  bucket.push(run)
+  RUNS.set(parentId, bucket)
+  return run
+}
+
+/**
+ * Record how one dispatch ended.
+ *
+ * The tool has already returned by the time this runs, so nothing here may
+ * throw: a bookkeeping failure must not become an unhandled rejection, and it
+ * must not replace the run's real outcome.
+ * @param {object} run - The live ledger entry.
+ * @param {{stopReason?: string, diagnostic?: string, structured?: unknown}} result
+ */
+function settleRun(run, result) {
+  try {
+    if (run.state !== 'running') return
+    const stopReason = typeof result?.stopReason === 'string' ? result.stopReason : 'error'
+    run.stopReason = stopReason
+    run.state = RUN_STATE[stopReason] ?? 'failed'
+    run.endedAt = new Date().toISOString()
+    const diagnostic = clip(result?.diagnostic, 200)
+    if (diagnostic !== undefined) run.diagnostic = diagnostic
+    if (result?.structured !== undefined) run.structured = result.structured
+  } catch {
+    // The outcome already recorded stands.
+  }
+}
+
+/**
+ * Project one ledger entry onto the `vibe_runs` row shape.
+ * @param {object} run
+ * @returns {object}
+ */
+function runRow(run) {
+  const row = { id: run.id, tier: run.tier, model: run.model, label: run.label, state: run.state }
+  if (run.task !== undefined) row.task = run.task
+  if (run.stopReason !== undefined) row.stopReason = run.stopReason
+  if (typeof run.structured?.state === 'string') row.structuredState = run.structured.state
+  if (Array.isArray(run.structured?.files)) row.files = run.structured.files.length
+  if (run.diagnostic !== undefined) row.diagnostic = run.diagnostic
+  if (run.startedAt !== undefined) row.startedAt = run.startedAt
+  if (run.endedAt !== undefined) row.endedAt = run.endedAt
+  return row
+}
+
+/**
+ * Render the ledger as one compact line per dispatch.
+ * @param {object} value - A `vibe_runs` result.
+ * @returns {string}
+ */
+function renderRuns(value) {
+  const runs = Array.isArray(value?.runs) ? value.runs : []
+  if (runs.length === 0) return 'No dispatches yet in this session.'
+  return runs
+    .map((run, index) => {
+      const line = [`#${index + 1}`, run.tier, run.model, run.label, `— ${run.state}`]
+      if (run.stopReason !== undefined) line.push(`(${run.stopReason})`)
+      if (run.structuredState !== undefined) line.push(run.structuredState)
+      if (run.files !== undefined) line.push(`${run.files} files`)
+      if (run.diagnostic !== undefined) line.push(`· ${run.diagnostic}`)
+      return line.join(' ')
+    })
+    .join('\n')
+}
+
+/**
+ * Build the ledger-reading tool. It is registered for the orchestrator only:
+ * a worker has no ledger of its own, and its dispatches belong to the
+ * orchestrator that started it.
+ * @returns {object} The tool definition.
+ */
+function runsTool() {
+  return {
+    name: 'vibe_runs',
+    description:
+      'List the dispatches this orchestration session made, oldest first, with each one\'s state, stop reason, and the structured receipt its worker returned. Use it before reporting, to see which delegated work actually finished.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    output: {
+      schema: RUNS_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: renderRuns(value) }],
+    },
+    isConcurrencySafe: () => true,
+    async execute(_args, exec) {
+      const parent = exec.agent
+      const bucket = parent === undefined ? [] : (RUNS.get(parent.id) ?? [])
+      return { kind: 'runs', count: bucket.length, runs: bucket.map(runRow) }
+    },
+  }
+}
+
 /**
  * Build one tier delegation tool.
  * @param {'fast'|'good'|'expert'} tier
@@ -116,6 +356,10 @@ function tierTool(tier, current, remember) {
         label: {
           type: 'string',
           description: 'A short display label of at most five words, such as "read config loader".',
+        },
+        force: {
+          type: 'boolean',
+          description: '派发前仍预检失败时强制执行',
         },
       },
       required: ['task'],
@@ -152,31 +396,84 @@ function tierTool(tier, current, remember) {
         throw new Error('vibe delegation requires the subagent service')
       }
       const route = current()[tier]
+      const model = `${route.provider}/${route.model}`
+      const shortLabel = typeof args?.label === 'string' && args.label.trim().length > 0 ? args.label.trim() : 'task'
+      const startedAt = new Date().toISOString()
+      if (args?.force !== true) {
+        try {
+          await preflightRoute(parent.ctx, route, exec.signal)
+        } catch (error) {
+          // A cancelled tool call is not a bad route; let the real reason out.
+          if (exec.signal?.aborted === true) throw error
+          const reason = messageOf(error)
+          openRun(parent.id, {
+            tier,
+            model,
+            label: shortLabel,
+            task: clip(task, 80),
+            state: 'preflight-failed',
+            diagnostic: clip(reason, 200),
+            startedAt,
+          })
+          throw new Error(
+            `route ${model} is not usable: ${reason}。到 Plugins → Vibe 改路由，或传 force:true 跳过预检。`,
+          )
+        }
+      }
       const agentOptions = {
         provider: route.provider,
         model: route.model,
         ...(route.reasoningEffort === undefined ? {} : { reasoningEffort: route.reasoningEffort }),
       }
-      const shortLabel = typeof args?.label === 'string' && args.label.trim().length > 0 ? args.label.trim() : 'task'
-      const activation = await subagents.startActivation({
-        provider: 'spawn',
-        // The tier prefix is how the child's role is recognised again while it is
-        // created, and it keeps the roster readable.
-        label: `${tier} · ${shortLabel}`.slice(0, 80),
-        request: {
-          parent,
-          agentOptions,
-          prompt: [{ type: 'text', text: task }],
-        },
-        signal: exec.signal,
-        delivery: 'parent',
+      let activation
+      try {
+        activation = await subagents.startActivation({
+          provider: 'spawn',
+          // The tier prefix is how the child's role is recognised again while it is
+          // created, and it keeps the roster readable.
+          label: `${tier} · ${shortLabel}`.slice(0, 80),
+          request: {
+            parent,
+            agentOptions,
+            prompt: [{ type: 'text', text: task }],
+            outputSchema: RECEIPT_SCHEMA,
+          },
+          signal: exec.signal,
+          delivery: 'parent',
+        })
+      } catch (error) {
+        openRun(parent.id, {
+          tier,
+          model,
+          label: shortLabel,
+          task: clip(task, 80),
+          state: RUN_STATE.error,
+          diagnostic: clip(messageOf(error), 200),
+          startedAt,
+        })
+        throw error
+      }
+      const run = openRun(parent.id, {
+        id: activation.childId,
+        tier,
+        model,
+        label: shortLabel,
+        task: clip(task, 80),
+        state: 'running',
+        startedAt,
       })
+      // The receipt arrives long after this tool returned, so it is booked in the
+      // background rather than awaited.
+      void activation.result.then(
+        (result) => settleRun(run, result),
+        (error) => settleRun(run, { stopReason: 'error', diagnostic: messageOf(error) }),
+      )
       remember(activation.childId, tier)
       return {
         kind: 'activation',
         subagentId: activation.childId,
         tier,
-        model: `${route.provider}/${route.model}`,
+        model,
       }
     },
   }
@@ -277,6 +574,9 @@ export function apply(ctx, config) {
   ctx.on('agent/disposed', ({ agent }) => {
     shaped.delete(agent.id)
     childTier.delete(agent.id)
+    // The ledger belongs to the Session that made the dispatches, so it goes
+    // when that Session goes.
+    RUNS.delete(agent.id)
   })
 }
 
@@ -299,14 +599,21 @@ function installOrchestrator(agent, config, remember) {
       ),
     )
   }
-  disposers.push(...denyTools(agent, ORCHESTRATOR_DENY))
+  const ledger = runsTool()
+  disposers.push(
+    agent.ctx.effect(
+      () => agent.ctx.tools.register(ledger),
+      `vibe-orchestrator: ${ledger.name}`,
+    ),
+  )
+  disposers.push(...allowOnly(agent, ORCHESTRATOR_ALLOW))
   // A guard is the backstop: it names no registry, so the boundary still holds
   // when a restriction could not be applied.
   disposers.push(
     agent.ctx.effect(
       () =>
         agent.ctx.tools.guard((exec) => {
-          if (!ORCHESTRATOR_DENY.includes(exec.name)) return undefined
+          if (ORCHESTRATOR_ALLOW.has(exec.name)) return undefined
           return `The Vibe orchestrator does not run "${exec.name}". Delegate this work to vibe_fast or vibe_good and report the result.`
         }),
       'vibe-orchestrator: orchestrator guard',
@@ -384,6 +691,32 @@ function installPersona(agent, role) {
       }),
     `vibe-orchestrator: ${role} persona`,
   )
+}
+
+/**
+ * Reduce one Agent's visible set to the named tools.
+ *
+ * Names are filtered against what the Agent can see and can restrict, because
+ * `restrict()` rejects an unknown global name outright.
+ * @param {object} agent
+ * @param {Set<string>} allowed
+ * @returns {unknown[]} Disposers for the applied restrictions.
+ */
+function allowOnly(agent, allowed) {
+  try {
+    const visible = new Set(agent.ctx.tools.schemas(scopeOf(agent.ctx)).map((tool) => tool.name))
+    const denied = [...visible].filter((name) => !allowed.has(name))
+    if (denied.length === 0) return []
+    return [
+      agent.ctx.effect(
+        () => agent.ctx.tools.restrict({ deny: denied }),
+        `vibe-orchestrator: allow ${[...allowed].join(', ')}`,
+      ),
+    ]
+  } catch {
+    // The guard installed beside this call enforces the same boundary.
+    return []
+  }
 }
 
 /**

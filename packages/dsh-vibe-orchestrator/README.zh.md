@@ -20,8 +20,11 @@
 | `good` | `cpa/gemini-3.8-flash-high` | 完整工作工具集 | 设计、调试、需要判断的工作 |
 | `expert` | `cpa/gpt-6.1-sol` | 可读全部、可写新计划 | 难题咨询 |
 
-director 只保留读取与派发类工具。`write`、`edit`、`bash`、`pwsh` 既从它的工具列表里移除，
-又由执行期 guard 拦截，所以它不会自己动手。
+director 的工具范围收窄为严格白名单：`read`、`glob`、`grep`、`todo_write`、三个 `vibe_*`（`vibe_fast`、`vibe_good`、`vibe_expert`）、`vibe_runs`、`send_message`、`interrupt_agent`、`list_agents`、`ask_user_question`。其余工具（包含写类工具 `write`/`edit`/`bash`/`pwsh`、网络工具、交付工具 `present`、Agent Teams 团队工具等）全部从 director 身上摘掉，且写操作有执行期 guard 拦截，杜绝亲自动手。
+
+### 路由预检
+
+三档派发现在会先做**路由预检**：用宿主 `llm` 服务校验 provider/模型是否可用，不可用直接拒绝并给出原文错误，可用 `force: true` 跳过；预检结果按路由缓存 10 分钟。
 
 ## 实现方式
 
@@ -30,7 +33,7 @@ preset。随后由 Host 行按角色塑形：
 
 | Agent | 人格 | 应用的边界 |
 |---|---|---|
-| 根会话 | director | 摘掉写类工具，加入三个 `vibe_*` 工具 |
+| 根会话 | director | 白名单收窄：仅保留 `read`、`glob`、`grep`、`todo_write`、三个 `vibe_*`、`vibe_runs`、`send_message`、`interrupt_agent`、`list_agents`、`ask_user_question`；摘掉其余全部工具（写类、web、present、团队工具等） |
 | `fast` worker | fast worker | 不变 |
 | `good` worker | good worker | 不变 |
 | `expert` worker | expert | 摘掉 `edit`、`bash`、`pwsh` |
@@ -45,6 +48,20 @@ worker 是普通子代理，继承父会话的 preset，因此它与兄弟的唯
 - `agent-preset/selected`：之后才切换到该 preset 的空白会话。
 
 切换到其它 preset 时，本行安装的一切都会被撤销。
+
+### 结构化完成回执
+
+完成回执改为**结构化**：worker 结束前必须调用 `structured_output`，交 `{state, summary, files?, verification?, question?}`：
+
+- `ready`：完成且自验过；
+- `blocked`：需要人类决定（必须写 `question`）；
+- `failed`：做不完（写明原因）。
+
+说明：不调用它会以 error 收场，这是刻意的失败模式，防止 worker 在未交代成果的情况下悄悄结束。
+
+### 只读账本 `vibe_runs`
+
+新增只读工具 `vibe_runs`：列出本会话每次派发的账本（tier、模型、label、状态、stopReason、结构化回执摘要）。
 
 ### 为什么不用 Agent Teams
 
@@ -72,14 +89,15 @@ director 人格与档位工具描述改编自 omp 的 vibe 模式源码：
 `packages/coding-agent/src/prompts/tools/vibe-spawn.md`。director 的定位、worker 的档位描述、
 Direction 规则、以及「必须读改动过的文件来核实 worker 的说法」这一条，都来自那里。
 
-有四处不同，都是刻意的：
+有五处不同，都是刻意的：
 
 | omp | 本插件 | 原因 |
 |---|---|---|
 | 两档 | 三档 | `expert` 咨询档是本插件新增 |
 | `vibe_send` / `vibe_kill` / `vibe_list` | `send_message` / `interrupt_agent` / `list_agents` | 用 dsh 自带的 worker 控制工具 |
 | `vibe_wait` | 无 | dsh 会把 worker 结果作为完成通知投递 |
-| director 只有 `read` | director 还有 `glob`、`grep` | 只读检索留在父会话，避免为每次查找付一次 worker 往返 |
+| director 只有 `read` | director 保留检索与编排白名单工具 | 只读检索留在父会话，避免为每次查找付一次 worker 往返；加入 `vibe_runs` 账本与 `ask_user_question` |
+| 散文回执 | 结构化回执（`structured_output`） | 强制状态可机读、必须自验，未交代结构化结果直接判 error |
 
 ## 安装
 
@@ -115,6 +133,7 @@ plugin_manager install_bundle /path/to/dsh-vibe-orchestrator
 | 文件 | 作用 |
 |---|---|
 | `lib/index.js` | Host 半：档位工具、按角色塑形、volatile 路由 |
+| `vibe_runs` | 只读账本工具，列出本会话派发历史；由 `lib/index.js` 提供 |
 | `lib/copy.js` | director 与 worker 人格、档位工具描述 |
 | `lib/dsh.js` | 解析宿主自身的 `@deepseek-ai/*` 包 |
 | `lib/client.js` | **Plugins → Vibe** 页面 |
@@ -126,12 +145,13 @@ plugin_manager install_bundle /path/to/dsh-vibe-orchestrator
 |---|---|---|
 | 激活方式 | `/vibe` 切换当前会话；plan/goal 模式下被禁止 | 按会话选择 Agent preset；plan 与 goal 工具根本不存在 |
 | 状态持久化 | 会话日志里的 mode change 事件 | 会话 header 记录 preset |
-| director 工具 | 工具集被**替换**为 `read`（+ 可选 `todo`）加 5 个 vibe 工具，连 `grep` 都没有 | preset 挂完整工具集，Host 行摘掉写类工具并加 3 个档位工具，保留 `glob` 与 `grep` |
+| director 工具 | 工具集被**替换**为 `read`（+ 可选 `todo`）加 5 个 vibe 工具，连 `grep` 都没有 | 白名单收窄：`read`、`glob`、`grep`、`todo_write`、3 个 `vibe_*`、`vibe_runs`、`send_message`、`interrupt_agent`、`list_agents`、`ask_user_question`；其余工具（写类、web、present、团队工具等）全部摘掉 |
 | 档位数 | 2 档，差异仅在 bundled agent 与模型 | 3 档，差异在模型、人格、工具边界三处 |
 | 专家咨询档 | 无 | 有；无 shell，可写计划 |
 | worker 复用 | 一个工作流一个常驻会话，绝不再 spawn | 同一条规则，写进人格与工具描述；用 `send_message` 继续同一个 worker |
 | 等待 | `vibe_wait` 阻塞到 worker turn 结束 | 不需要：dsh 会推送完成通知 |
 | 终止 worker | `vibe_kill` | `interrupt_agent`（保留 inbox） |
+| 完成回执 | 散文式回复或文本总结 | 结构化工具：worker 必须调用 `structured_output` 交代 state 与 summary，否则以 error 失败 |
 | 退出模式 | 杀光 worker 并打墓碑 | 容量随 worker 结算自动归还，无需 kill-all |
 | 路由配置 | 配置文件里的 `modelRoles` / `task.agentModelOverrides` | UI 实时设置页 |
 
@@ -144,9 +164,17 @@ plugin_manager install_bundle /path/to/dsh-vibe-orchestrator
 - 组装出的 preset 携带完整工作工具集；
 - 设置页可以渲染（框架、档位行、选择器、保存按钮）。
 
-作者未验证：最新一版选择器菜单的实际渲染效果。所用组件的导出名与 props 都已对照
-浏览器实际加载的客户端 bundle 核对（`Menu`、`MenuGroup`、`MenuItemButton`、`Button`
-以及 check / chevron 图标），但编写环境没有浏览器控制能力。
+已实现、未在新会话里实测：
+
+- 路由预检：用宿主 `llm` 服务校验 provider/模型是否可用，不可用直接拒绝并给出原文错误，可用 `force: true` 跳过；预检结果按路由缓存 10 分钟；
+- 新增只读账本工具 `vibe_runs`：列出本会话每次派发的账本（tier、模型、label、状态、stopReason、结构化回执摘要）；
+- 结构化完成回执：worker 结束前必须调用 `structured_output`，交 `{state, summary, files?, verification?, question?}`；`ready` = 完成且自验过，`blocked` = 需要人类决定（必须写 question），`failed` = 做不完（写原因）；说明：`structured_output` 未调用会以 error 收场；
+- 编排者工具范围收窄为白名单：`read`、`glob`、`grep`、`todo_write`、三个 `vibe_*`、`vibe_runs`、`send_message`、`interrupt_agent`、`list_agents`、`ask_user_question`；其余工具（含 web、present、团队工具）从编排者身上摘掉。
+
+作者未验证：
+
+- 子代理可寻址续跑在本部署未验证；
+- 最新一版选择器菜单的实际渲染效果。所用组件的导出名与 props 都已对照浏览器实际加载的客户端 bundle 核对（`Menu`、`MenuGroup`、`MenuItemButton`、`Button` 以及 check / chevron 图标），但编写环境没有浏览器控制能力。
 
 ## 许可
 
