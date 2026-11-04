@@ -54,16 +54,6 @@ const ORCHESTRATOR_ALLOW = new Set([
 /** Tools the expert may not run. */
 const EXPERT_DENY = ['edit', 'bash', 'pwsh']
 
-/**
- * Delays at which the orchestrator's allowlist is recomputed.
- *
- * The first application runs on `agent/created`, while the preset's tools are
- * still being registered, so it can only deny what is visible at that moment.
- * Each recheck recomputes from the registry as it stands then, which is what
- * takes a late tool off the model's table instead of only refusing it on call.
- */
-const ALLOWLIST_RECHECK_MS = [250, 1000, 3000]
-
 /** The PTC presentation transport: reserved, and never deniable. */
 const RUN_CODE_NAME = 'run_code'
 
@@ -531,6 +521,8 @@ export function apply(ctx, config) {
   const childTier = new Map()
   /** Session id → the disposers of everything installed for its Vibe role. */
   const shaped = new Map()
+  /** Session id → the allowlist state of the Agent shaped as an orchestrator. */
+  const orchestrators = new Map()
 
   const remember = (childId, tier) => {
     childTier.set(childId, tier)
@@ -538,6 +530,7 @@ export function apply(ctx, config) {
 
   /** Release everything installed for one Session's Vibe role. */
   const unshape = (sessionId) => {
+    orchestrators.delete(sessionId)
     const disposers = shaped.get(sessionId)
     if (disposers === undefined) return
     shaped.delete(sessionId)
@@ -547,7 +540,9 @@ export function apply(ctx, config) {
   /** Install the orchestrator role, replacing anything installed before. */
   const shapeOrchestrator = (agent) => {
     unshape(agent.id)
-    shaped.set(agent.id, installOrchestrator(agent, config, remember))
+    const installed = installOrchestrator(agent, config, remember)
+    shaped.set(agent.id, installed.disposers)
+    orchestrators.set(agent.id, { agent, state: installed.allowlist })
   }
 
   /** Install a worker role, replacing anything installed before. */
@@ -655,7 +650,25 @@ export function apply(ctx, config) {
     await shape(agent, presetId)
   })
 
+  // Every registration, removal, and restriction notifies `tools/change`
+  // without an argument, so one handler re-applies the boundary to every Agent
+  // already shaped as an orchestrator. This is what takes a tool that joins the
+  // preset's table after shaping off the model's table. `restrict()` notifies
+  // as well, so the handler must not re-enter: `enforceAllowlist` returns before
+  // calling `restrict()` once the computed deny set adds no new name, and its
+  // in-flight pass is flagged so a nested event only schedules one more pass.
+  ctx.on('tools/change', () => {
+    for (const { agent, state } of orchestrators.values()) {
+      try {
+        enforceAllowlist(agent, state)
+      } catch {
+        // A disposed Agent or an unreadable registry is not this event's concern.
+      }
+    }
+  })
+
   ctx.on('agent/disposed', ({ agent }) => {
+    orchestrators.delete(agent.id)
     shaped.delete(agent.id)
     shapedAs.delete(agent.id)
     childTier.delete(agent.id)
@@ -671,7 +684,8 @@ export function apply(ctx, config) {
  * @param {object} agent
  * @param {object} config
  * @param {(childId: string, tier: string) => void} remember
- * @returns {unknown[]} Disposers for everything installed.
+ * @returns {{disposers: unknown[], allowlist: object}} What to unwind, and the
+ * boundary state the `tools/change` handler keeps re-applying.
  */
 function installOrchestrator(agent, config, remember) {
   const disposers = [installPersona(agent, 'orchestrator')]
@@ -692,7 +706,10 @@ function installOrchestrator(agent, config, remember) {
       `vibe-orchestrator: ${ledger.name}`,
     ),
   )
-  disposers.push(...allowOnly(agent, ORCHESTRATOR_ALLOW))
+  // The first application runs while the preset's tools are still registering,
+  // so it can only deny what is visible now. `tools/change` applies the rest as
+  // they land; nothing here depends on timing.
+  const allowlist = allowOnly(agent, ORCHESTRATOR_ALLOW)
   // A guard is the backstop: it names no registry, so the boundary still holds
   // when a restriction could not be applied.
   disposers.push(
@@ -705,19 +722,14 @@ function installOrchestrator(agent, config, remember) {
       'vibe-orchestrator: orchestrator guard',
     ),
   )
-  // `allowOnly` ran while this preset's tools were still registering, so it can
-  // only have denied what was visible then. Recompute a few times, by which point
-  // the registry is complete, and the tools that arrived late leave the model's
-  // table too. Repeated restrictions are idempotent and stack harmlessly.
-  const rechecks = ALLOWLIST_RECHECK_MS.map((delay) =>
-    setTimeout(() => {
-      enforceAllowlist(agent, ORCHESTRATOR_ALLOW)
-    }, delay),
-  )
+  // Restrictions applied after this function returned are owned by the Agent
+  // scope, but this role's unwinding still lifts them so a re-shape starts
+  // from a clean table.
   disposers.push(() => {
-    for (const timer of rechecks) clearTimeout(timer)
+    for (const restriction of allowlist.disposers) runDisposer(restriction)
+    allowlist.disposers.length = 0
   })
-  return disposers
+  return { disposers, allowlist }
 }
 
 /**
@@ -794,54 +806,97 @@ function installPersona(agent, role) {
 /**
  * Reduce one Agent's visible set to the named tools.
  *
- * Names are filtered against what the Agent can see and can restrict, because
- * `restrict()` rejects an unknown global name outright.
+ * The boundary is applied one name at a time, because `restrict()` rejects a
+ * batch wholesale when any one name is outside the inherited layers — and a
+ * tool another plugin registered in this Agent's own scope (the Team tool set,
+ * for example) can never be restricted from here. Refusing one such name must
+ * not leave every other tool on the table. The names it did refuse are kept for
+ * the guard, which enforces the same boundary at call time.
  * @param {object} agent
  * @param {Set<string>} allowed
- * @returns {unknown[]} Disposers for the applied restrictions.
+ * @returns {object} The boundary state the `tools/change` handler re-applies.
  */
 function allowOnly(agent, allowed) {
+  const state = {
+    allowed,
+    /** Names a restriction already refuses for this Agent. */
+    denied: new Set(),
+    /** Names `restrict()` refused; only the guard can stop those. */
+    refused: new Set(),
+    /** Disposers of the restrictions this state applied, oldest first. */
+    disposers: [],
+    /** Whether a pass is in flight, and whether one was requested meanwhile. */
+    applying: false,
+    pending: false,
+  }
   try {
-    const visible = new Set(agent.ctx.tools.schemas(scopeOf(agent.ctx)).map((tool) => tool.name))
-    const denied = [...visible].filter((name) => !allowed.has(name))
-    if (denied.length === 0) return []
-    return [
-      agent.ctx.effect(
-        () => agent.ctx.tools.restrict({ deny: denied }),
-        `vibe-orchestrator: allow ${[...allowed].join(', ')}`,
-      ),
-    ]
+    enforceAllowlist(agent, state)
   } catch {
     // The guard installed beside this call enforces the same boundary.
-    return []
   }
+  return state
 }
 
 /**
- * Recompute one Agent's deny list from what it can see right now.
+ * Recompute and re-apply one Agent's deny list from what it can see right now.
  *
- * `allowOnly` is the first application, installed as a disposer so unwinding the
- * role lifts it. This one runs again after the registry has settled and calls
- * `restrict()` directly: the point is the side effect, and a restriction the
- * Agent scope owns is lifted when that scope goes.
+ * Names are tried one at a time. Every failure is contained: a name
+ * `restrict()` refuses, a disposed Agent, a missing registry. The guard beside
+ * this boundary is what must survive a restriction that could not be applied.
  *
- * Every failure is swallowed — a name `restrict()` refuses, a disposed Agent, a
- * missing registry — because the guard beside it is the boundary that must
- * survive a restriction that could not be applied.
+ * `restrict()` itself announces `tools/change`, so a pass marks its state as in
+ * flight before touching the registry. A nested event then only records that
+ * another pass is due; the outer pass runs it once, after its own deny set has
+ * been recorded. Once the computed set adds no name — the ordinary case for the
+ * event our own restrictions cause — this returns without calling `restrict()`.
  * @param {object} agent
- * @param {Set<string>} allowed
- * @returns {boolean} Whether a restriction was applied.
+ * @param {object} state - The Agent's boundary state from `allowOnly`.
+ * @returns {boolean} Whether this call newly denied anything.
  */
-function enforceAllowlist(agent, allowed) {
-  try {
-    const visible = agent.ctx.tools.schemas(scopeOf(agent.ctx)).map((tool) => tool.name)
-    const denied = visible.filter((name) => !allowed.has(name) && name !== RUN_CODE_NAME)
-    if (denied.length === 0) return false
-    agent.ctx.tools.restrict({ deny: denied })
-    return true
-  } catch {
+function enforceAllowlist(agent, state) {
+  if (state.applying) {
+    state.pending = true
     return false
   }
+  state.applying = true
+  let applied = 0
+  try {
+    do {
+      state.pending = false
+      applied += denyVisible(agent, state)
+    } while (state.pending)
+  } finally {
+    state.applying = false
+  }
+  return applied > 0
+}
+
+/**
+ * One deny pass: everything visible, not allowed, not already handled.
+ * @param {object} agent
+ * @param {object} state
+ * @returns {number} How many names this pass newly removed from the table.
+ */
+function denyVisible(agent, state) {
+  const visible = agent.ctx.tools.schemas(scopeOf(agent.ctx)).map((tool) => tool.name)
+  let applied = 0
+  for (const name of visible) {
+    if (state.allowed.has(name)) continue
+    // `run_code` is the PTC transport, deliberately outside the filterable
+    // layers: `restrict()` throws on it like on an unknown name.
+    if (name === RUN_CODE_NAME) continue
+    if (state.denied.has(name) || state.refused.has(name)) continue
+    try {
+      state.disposers.push(agent.ctx.tools.restrict({ deny: [name] }))
+      state.denied.add(name)
+      applied += 1
+    } catch {
+      // A tool in this Agent's own scope: `restrict()` cannot reach it, and one
+      // refused name must not invalidate the others. The guard covers it.
+      state.refused.add(name)
+    }
+  }
+  return applied
 }
 
 /**
