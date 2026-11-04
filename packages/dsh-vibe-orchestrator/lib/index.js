@@ -563,18 +563,15 @@ export function apply(ctx, config) {
   /**
    * Resolve the preset a Session runs.
    *
-   * A restored Session does not always carry `agentPreset` in its header when its
-   * Agent is created: the registry replays the selection as an
-   * `agent-preset/selected` event, and its own reconstruction reads the
-   * `agentPreset` projection rather than the header. Ask the header first because
-   * it is cheapest, then the projection, then the selection that arrived before
-   * this Agent was registered.
+   * The `agentPreset` projection is authoritative: a Session created as
+   * `standard` and later switched to `vibe` keeps `standard` in its header, and
+   * only the projection follows the selection. The header is the fallback for a
+   * Session whose projection service is not mounted, and the pending selection
+   * covers an event that arrived before this Agent was registered.
    * @param {object} agent
    * @returns {string|undefined}
    */
   const presetOf = (agent) => {
-    const header = agent.session?.header
-    if (typeof header?.agentPreset === 'string') return header.agentPreset
     try {
       const projections = ctx.get('sessionProjections')
       const state = typeof projections?.stateOf === 'function'
@@ -582,20 +579,31 @@ export function apply(ctx, config) {
         : undefined
       if (typeof state === 'string' && state.length > 0) return state
     } catch {
-      // A missing projection service leaves the pending selection as the answer.
+      // A missing projection service leaves the header as the answer.
     }
+    const header = agent.session?.header
+    if (typeof header?.agentPreset === 'string') return header.agentPreset
     return pendingPreset.get(agent.id)
   }
 
+  /** Session id → the preset its shaping was last applied for. */
+  const shapedAs = new Map()
+
   /**
    * Shape one Agent from whatever preset fact is readable now.
+   *
+   * A restored Session reconstructs its projection lazily, so a first attempt can
+   * read a truth that is about to change. `shapedAs` keeps a repeated attempt from
+   * undoing a shaping that already matches.
    * @param {object} agent
    * @returns {Promise<boolean>} Whether the Agent was shaped.
    */
   const shapeFromFacts = async (agent) => {
     const preset = presetOf(agent)
-    pendingPreset.delete(agent.id)
     if (preset === undefined) return false
+    if (shapedAs.get(agent.id) === preset) return true
+    pendingPreset.delete(agent.id)
+    shapedAs.set(agent.id, preset)
     await shape(agent, preset)
     return true
   }
@@ -603,11 +611,13 @@ export function apply(ctx, config) {
   ctx.on('agent/created', async ({ agent }) => {
     if (agent.session?.header === undefined) return
     if (await shapeFromFacts(agent)) return
-    // A restored Session can restore its selection just after its Agent exists.
-    // Re-read on the next tick instead of leaving the Agent unshaped forever.
-    setTimeout(() => {
-      void shapeFromFacts(agent)
-    }, 0)
+    // A restored Session reconstructs its selection just after its Agent exists.
+    // Re-read a few times instead of leaving the Agent unshaped forever.
+    for (const delay of [0, 250, 1000]) {
+      setTimeout(() => {
+        void shapeFromFacts(agent)
+      }, delay)
+    }
   })
 
   // A blank Session switched to Vibe after it was created joins the preset without
@@ -633,6 +643,7 @@ export function apply(ctx, config) {
 
   ctx.on('agent/disposed', ({ agent }) => {
     shaped.delete(agent.id)
+    shapedAs.delete(agent.id)
     childTier.delete(agent.id)
     pendingPreset.delete(agent.id)
     // The ledger belongs to the Session that made the dispatches, so it goes
