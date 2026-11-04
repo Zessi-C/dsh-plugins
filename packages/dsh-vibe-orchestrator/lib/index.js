@@ -54,6 +54,19 @@ const ORCHESTRATOR_ALLOW = new Set([
 /** Tools the expert may not run. */
 const EXPERT_DENY = ['edit', 'bash', 'pwsh']
 
+/**
+ * Delays at which the orchestrator's allowlist is recomputed.
+ *
+ * The first application runs on `agent/created`, while the preset's tools are
+ * still being registered, so it can only deny what is visible at that moment.
+ * Each recheck recomputes from the registry as it stands then, which is what
+ * takes a late tool off the model's table instead of only refusing it on call.
+ */
+const ALLOWLIST_RECHECK_MS = [250, 1000, 3000]
+
+/** The PTC presentation transport: reserved, and never deniable. */
+const RUN_CODE_NAME = 'run_code'
+
 /** Persona role per tier. */
 const ROLE_OF_TIER = { fast: 'fast', good: 'good', expert: 'expert' }
 
@@ -692,6 +705,18 @@ function installOrchestrator(agent, config, remember) {
       'vibe-orchestrator: orchestrator guard',
     ),
   )
+  // `allowOnly` ran while this preset's tools were still registering, so it can
+  // only have denied what was visible then. Recompute a few times, by which point
+  // the registry is complete, and the tools that arrived late leave the model's
+  // table too. Repeated restrictions are idempotent and stack harmlessly.
+  const rechecks = ALLOWLIST_RECHECK_MS.map((delay) =>
+    setTimeout(() => {
+      enforceAllowlist(agent, ORCHESTRATOR_ALLOW)
+    }, delay),
+  )
+  disposers.push(() => {
+    for (const timer of rechecks) clearTimeout(timer)
+  })
   return disposers
 }
 
@@ -789,6 +814,33 @@ function allowOnly(agent, allowed) {
   } catch {
     // The guard installed beside this call enforces the same boundary.
     return []
+  }
+}
+
+/**
+ * Recompute one Agent's deny list from what it can see right now.
+ *
+ * `allowOnly` is the first application, installed as a disposer so unwinding the
+ * role lifts it. This one runs again after the registry has settled and calls
+ * `restrict()` directly: the point is the side effect, and a restriction the
+ * Agent scope owns is lifted when that scope goes.
+ *
+ * Every failure is swallowed — a name `restrict()` refuses, a disposed Agent, a
+ * missing registry — because the guard beside it is the boundary that must
+ * survive a restriction that could not be applied.
+ * @param {object} agent
+ * @param {Set<string>} allowed
+ * @returns {boolean} Whether a restriction was applied.
+ */
+function enforceAllowlist(agent, allowed) {
+  try {
+    const visible = agent.ctx.tools.schemas(scopeOf(agent.ctx)).map((tool) => tool.name)
+    const denied = visible.filter((name) => !allowed.has(name) && name !== RUN_CODE_NAME)
+    if (denied.length === 0) return false
+    agent.ctx.tools.restrict({ deny: denied })
+    return true
+  } catch {
+    return false
   }
 }
 
