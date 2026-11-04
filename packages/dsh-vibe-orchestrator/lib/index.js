@@ -603,16 +603,17 @@ export function apply(ctx, config) {
     if (preset === undefined) return false
     if (shapedAs.get(agent.id) === preset) return true
     pendingPreset.delete(agent.id)
-    shapedAs.set(agent.id, preset)
     await shape(agent, preset)
+    shapedAs.set(agent.id, preset)
     return true
   }
 
   ctx.on('agent/created', async ({ agent }) => {
     if (agent.session?.header === undefined) return
-    if (await shapeFromFacts(agent)) return
-    // A restored Session reconstructs its selection just after its Agent exists.
-    // Re-read a few times instead of leaving the Agent unshaped forever.
+    // Always schedule the re-reads. The first answer can come from the header
+    // while a restored Session's projection is still reconstructing, and that
+    // provisional answer must not end the attempt: a later read may correct it.
+    await shapeFromFacts(agent)
     for (const delay of [0, 250, 1000, 3000, 8000]) {
       setTimeout(() => {
         void shapeFromFacts(agent)
