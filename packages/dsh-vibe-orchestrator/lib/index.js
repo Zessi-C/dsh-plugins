@@ -557,23 +557,84 @@ export function apply(ctx, config) {
     shapeWorker(agent, await resolveChildTier(ctx, agent, header, childTier))
   }
 
-  ctx.on('agent/created', async ({ agent }) => {
+  /** Session id → the preset it selected before its Agent was registered. */
+  const pendingPreset = new Map()
+
+  /**
+   * Resolve the preset a Session runs.
+   *
+   * A restored Session does not always carry `agentPreset` in its header when its
+   * Agent is created: the registry replays the selection as an
+   * `agent-preset/selected` event, and its own reconstruction reads the
+   * `agentPreset` projection rather than the header. Ask the header first because
+   * it is cheapest, then the projection, then the selection that arrived before
+   * this Agent was registered.
+   * @param {object} agent
+   * @returns {string|undefined}
+   */
+  const presetOf = (agent) => {
     const header = agent.session?.header
-    if (header === undefined) return
-    await shape(agent, header.agentPreset)
+    if (typeof header?.agentPreset === 'string') return header.agentPreset
+    try {
+      const projections = ctx.get('sessionProjections')
+      const state = typeof projections?.stateOf === 'function'
+        ? projections.stateOf(agent.session, 'agentPreset')
+        : undefined
+      if (typeof state === 'string' && state.length > 0) return state
+    } catch {
+      // A missing projection service leaves the pending selection as the answer.
+    }
+    return pendingPreset.get(agent.id)
+  }
+
+  /**
+   * Shape one Agent from whatever preset fact is readable now.
+   * @param {object} agent
+   * @returns {Promise<boolean>} Whether the Agent was shaped.
+   */
+  const shapeFromFacts = async (agent) => {
+    const preset = presetOf(agent)
+    pendingPreset.delete(agent.id)
+    if (preset === undefined) return false
+    await shape(agent, preset)
+    return true
+  }
+
+  ctx.on('agent/created', async ({ agent }) => {
+    if (agent.session?.header === undefined) return
+    if (await shapeFromFacts(agent)) return
+    // A restored Session can restore its selection just after its Agent exists.
+    // Re-read on the next tick instead of leaving the Agent unshaped forever.
+    setTimeout(() => {
+      void shapeFromFacts(agent)
+    }, 0)
   })
 
   // A blank Session switched to Vibe after it was created joins the preset without
   // a second `agent/created`, so the recorded selection drives the same shaping.
+  // A restored Session replays this selection before its Agent is registered, so
+  // keep it and apply it once that Agent exists.
   ctx.on('agent-preset/selected', async (sessionId, presetId) => {
     const agent = ctx.agents.get(sessionId)
-    if (agent === undefined) return
+    if (agent === undefined) {
+      pendingPreset.set(sessionId, presetId)
+      setTimeout(() => {
+        const later = ctx.agents.get(sessionId)
+        if (later === undefined) return
+        if (pendingPreset.get(sessionId) !== presetId) return
+        pendingPreset.delete(sessionId)
+        void shape(later, presetId)
+      }, 0)
+      return
+    }
+    pendingPreset.delete(sessionId)
     await shape(agent, presetId)
   })
 
   ctx.on('agent/disposed', ({ agent }) => {
     shaped.delete(agent.id)
     childTier.delete(agent.id)
+    pendingPreset.delete(agent.id)
     // The ledger belongs to the Session that made the dispatches, so it goes
     // when that Session goes.
     RUNS.delete(agent.id)
