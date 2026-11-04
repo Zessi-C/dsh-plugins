@@ -613,7 +613,7 @@ export function apply(ctx, config) {
     if (await shapeFromFacts(agent)) return
     // A restored Session reconstructs its selection just after its Agent exists.
     // Re-read a few times instead of leaving the Agent unshaped forever.
-    for (const delay of [0, 250, 1000]) {
+    for (const delay of [0, 250, 1000, 3000, 8000]) {
       setTimeout(() => {
         void shapeFromFacts(agent)
       }, delay)
