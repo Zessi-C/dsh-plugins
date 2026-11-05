@@ -373,6 +373,23 @@ export function normaliseGitUrl(url) {
   return text.replace(/#.*$/, '').replace(/\.git$/, '')
 }
 
+/**
+ * Compose a full git installation spec for pnpm/dsh, preserving monorepo subdirectories.
+ *
+ * e.g. github:Zessi-C/dsh-plugins#main&path:/packages/dsh-lan-gate
+ *   -> https://github.com/Zessi-C/dsh-plugins#HEAD&path:/packages/dsh-lan-gate
+ */
+export function composeGitSpec(record, targetRef) {
+  const specText = String(record.spec ?? record.url ?? '')
+  const base = normaliseGitUrl(record.url ?? record.spec)
+  const parsed = classifySpec(specText)
+  const ref = targetRef ?? parsed.ref ?? 'HEAD'
+  if (parsed.subdirectory) {
+    return `${base}#${ref}&path:/${parsed.subdirectory}`
+  }
+  return `${base}#${ref}`
+}
+
 //#endregion
 
 //#region helpers
@@ -1185,7 +1202,7 @@ class Updater {
       if (accept !== true) return { ok: false, mode: 'needs-consent', message: `${widened.message}; accepting the risk records an exact-version exemption instead` }
     }
     if (record.kind === 'git' && record.probe?.hasUpdate === true && record.probe?.head !== undefined) {
-      const outcome = await this.reinstall(record, `${normaliseGitUrl(record.url ?? record.spec)}#${record.probe.head}`)
+      const outcome = await this.reinstall(record, composeGitSpec(record, record.probe.head))
       return { ...outcome, to: record.probe.head, mode: 'git-head' }
     }
     if (accept !== true) {
@@ -1249,7 +1266,7 @@ class Updater {
           }
           if (record.kind === 'git') {
             const head = item.version === undefined ? record.probe?.head : item.version
-            const outcome = await this.reinstall(record, `${normaliseGitUrl(record.url ?? record.spec)}#${head ?? 'HEAD'}`)
+            const outcome = await this.reinstall(record, composeGitSpec(record, head ?? 'HEAD'))
             outcomes.push({ id: item.id, action: 'update', to: record.probe?.latest ?? head, ...outcome })
             continue
           }

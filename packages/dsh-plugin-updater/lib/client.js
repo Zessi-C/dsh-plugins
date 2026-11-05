@@ -120,6 +120,29 @@ window.__ModuleLoader__.load({
       tokenCleared: '已清除',
       tokenFailed: '操作失败',
       tokenOpen: '凭据',
+      updateAll: '全部更新',
+      updateAllTip: '更新所有可用且兼容的插件',
+      restartInstance: '立即重启实例',
+      restartHint: '插件更新已完成，建议立即重启实例以生效最新代码',
+      restartingInstance: '正在重启实例…',
+      restartSuccess: '实例重启成功，正在重新连接…',
+      restartFailed: '重启发起失败，请尝试手动刷新或在终端执行 dsh-web-ctl restart',
+      scheduleBtn: '定时更新',
+      scheduleTitle: '自动检查与更新设置',
+      scheduleDesc: '在后台定期核对插件版本并按策略自动处理。',
+      scheduleFreq: '检查频率',
+      scheduleFreqSub: '定时检索各源仓库的新版本',
+      scheduleOff: '已关闭（手动更新）',
+      schedule6h: '每 6 小时',
+      scheduleDaily: '每天一次',
+      scheduleWeekly: '每周一次',
+      scheduleAutoApply: '自动安装安全更新',
+      scheduleAutoApplyHint: '仅自动应用兼容当前 dsh 版本的稳定更新',
+      scheduleClose: '完成',
+      metricsTotal: '已装插件',
+      metricsUpdates: '可更新',
+      metricsBlocked: '不兼容',
+      metricsLastCheck: '上次检查',
     }
 
     const en = {
@@ -198,6 +221,29 @@ window.__ModuleLoader__.load({
       tokenCleared: 'Cleared',
       tokenFailed: 'Failed',
       tokenOpen: 'Credential',
+      updateAll: 'Update all',
+      updateAllTip: 'Update all available compatible plugins',
+      restartInstance: 'Restart instance',
+      restartHint: 'Updates completed. Restart the dsh instance to load fresh plugin code.',
+      restartingInstance: 'Restarting instance…',
+      restartSuccess: 'Restarted successfully, reloading…',
+      restartFailed: 'Failed to restart instance',
+      scheduleBtn: 'Auto Update',
+      scheduleTitle: 'Auto-Update Settings',
+      scheduleDesc: 'Periodically check plugin versions and handle updates in the background.',
+      scheduleFreq: 'Check Frequency',
+      scheduleFreqSub: 'Check registries and remotes for new releases',
+      scheduleOff: 'Disabled (Manual)',
+      schedule6h: 'Every 6 hours',
+      scheduleDaily: 'Daily',
+      scheduleWeekly: 'Weekly',
+      scheduleAutoApply: 'Auto-apply Safe Updates',
+      scheduleAutoApplyHint: 'Only applies updates compatible with running dsh',
+      scheduleClose: 'Done',
+      metricsTotal: 'Installed',
+      metricsUpdates: 'Updates',
+      metricsBlocked: 'Incompatible',
+      metricsLastCheck: 'Last Check',
     }
 
     //#endregion
@@ -206,95 +252,261 @@ window.__ModuleLoader__.load({
 
     const CSS = `
 .pu-root{
-  --pu-cols:minmax(0,1fr) 140px 110px;
-  display:flex;flex-direction:column;gap:26px;padding:0 0 40px;
-  color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;
+  --pu-cols:minmax(260px,1fr) 200px 150px;
+  display:flex;flex-direction:column;gap:18px;padding:0 0 40px;
+  color:var(--dsw-alias-label-primary,#1f2937);font-size:13px;line-height:20px;
   font-variant-numeric:tabular-nums;
 }
-.pu-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.pu-metrics{
+  display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:2px;
+}
+.pu-metric-chip{
+  display:flex;flex-direction:column;gap:3px;padding:10px 14px;
+  background:#ffffff !important;
+  border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.08));
+  border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.03);
+  transition:all .15s ease;
+}
+.pu-metric-chip:hover{
+  border-color:var(--dsw-alias-border-l2,rgba(0,0,0,.16));
+  box-shadow:0 2px 6px rgba(0,0,0,.06);
+}
+.pu-metric-label{font-size:11.5px;color:var(--dsw-alias-label-tertiary,#71717a);font-weight:500}
+.pu-metric-val{font-size:17px;font-weight:600;display:flex;align-items:center;gap:6px}
+.pu-metric-val.pu-accent{color:var(--dsw-alias-brand-primary,#2563eb)}
+.pu-metric-val.pu-success{color:#10b981}
+.pu-metric-val.pu-warn{color:#f59e0b}
+
+.pu-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:2px 0}
 .pu-spacer{flex:1}
-.pu-context{color:var(--dsw-alias-label-tertiary);font-size:12px}
-.pu-btn{appearance:none;border:1px solid var(--dsw-alias-border-l2);background:transparent;
-  color:var(--dsw-alias-label-primary);border-radius:var(--dsw-radius-md,8px);padding:6px 14px;
-  font:inherit;font-size:13px;line-height:18px;cursor:pointer;white-space:nowrap;
-  transition:background .12s,border-color .12s,opacity .12s}
-.pu-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,var(--dsw-alias-bg-layer-2))}
+.pu-btn{
+  appearance:none;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.15));background:#ffffff;
+  color:var(--dsw-alias-label-primary,#1f2937);border-radius:8px;padding:6px 14px;height:32px;
+  font:inherit;font-size:13px;line-height:18px;font-weight:500;cursor:pointer;white-space:nowrap;
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;box-sizing:border-box;
+  transition:all .14s ease;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.pu-btn:hover:not(:disabled){
+  background:var(--dsw-alias-interactive-bg-hover,var(--dsw-alias-bg-layer-2,rgba(0,0,0,.05)));
+  border-color:var(--dsw-alias-border-l3,rgba(0,0,0,.26));
+}
 .pu-btn:disabled{opacity:.45;cursor:default}
-.pu-btn:focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-alias-brand-primary);outline-offset:1px}
-.pu-btn-sm{padding:4px 14px;font-size:12px;border-radius:6px;min-width:64px;text-align:center}
-.pu-btn-primary{background:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-primary);
-  color:var(--dsw-alias-bg-base);font-weight:500}
-.pu-btn-primary:hover:not(:disabled){opacity:.86;background:var(--dsw-alias-label-primary)}
-.pu-filter{flex:0 0 210px;border:1px solid var(--dsw-alias-border-l4,var(--dsw-alias-border-l2));
-  background:transparent;color:var(--dsw-alias-label-primary);border-radius:var(--dsw-radius-md,8px);
-  padding:6px 12px;font:inherit;font-size:13px}
-.pu-filter:focus-visible{outline:none;border-color:var(--dsw-alias-state-business-primary,var(--dsw-alias-brand-primary))}
-.pu-section{display:flex;flex-direction:column;gap:8px}
-.pu-section-head{display:flex;align-items:center;gap:8px;margin:0;padding:0 8px}
-.pu-section-title{font-size:14px;font-weight:500;line-height:22px}
-.pu-count{color:var(--dsw-alias-label-tertiary);font-size:12px;font-weight:400}
-.pu-list{display:flex;flex-direction:column;gap:2px}
-.pu-row{display:grid;grid-template-columns:var(--pu-cols);align-items:center;gap:12px;
-  padding:10px 12px;border-radius:var(--dsw-radius-lg,10px);min-width:0}
-.pu-row:hover{background:var(--dsw-alias-interactive-bg-hover,var(--dsw-alias-bg-layer-1))}
-.pu-head-row{display:grid;grid-template-columns:var(--pu-cols);gap:12px;align-items:center;
-  padding:0 12px 4px;border-bottom:1px solid var(--dsw-alias-border-l1)}
-.pu-head-cell{font-size:11px;font-weight:600;color:var(--dsw-alias-label-tertiary);letter-spacing:.02em}
+.pu-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#2563eb);outline-offset:1px}
+.pu-btn-sm{padding:2px 12px;font-size:12px;height:26px;border-radius:6px;min-width:54px;text-align:center}
+.pu-btn-primary{
+  background:var(--dsw-alias-brand-primary,#2563eb);border-color:var(--dsw-alias-brand-primary,#2563eb);
+  color:#fff;font-weight:500}
+.pu-btn-primary:hover:not(:disabled){
+  opacity:.92;background:var(--dsw-alias-brand-primary,#2563eb);box-shadow:0 2px 8px rgba(37,99,235,.25)}
+.pu-btn-all{
+  background:linear-gradient(135deg,#10b981,#059669);border-color:#059669;color:#fff;font-weight:600;
+  box-shadow:0 2px 6px rgba(16,185,129,.25);padding:6px 16px;height:32px;
+}
+.pu-btn-all:hover:not(:disabled){
+  background:linear-gradient(135deg,#059669,#047857);box-shadow:0 3px 10px rgba(16,185,129,.35);
+}
+.pu-btn-done{
+  background:var(--dsw-alias-brand-primary,#2563eb);border-color:var(--dsw-alias-brand-primary,#2563eb);
+  color:#fff;font-weight:500;padding:5px 18px;height:30px;border-radius:7px;
+}
+.pu-btn-done:hover:not(:disabled){
+  opacity:.92;background:var(--dsw-alias-brand-primary,#2563eb);
+}
+.pu-btn-restart{
+  background:linear-gradient(135deg,#6366f1,#4f46e5);border-color:#4f46e5;color:#fff;font-weight:600;
+  box-shadow:0 2px 8px rgba(79,70,229,.3);padding:6px 16px;border-radius:8px;font-size:13px;height:34px;
+}
+.pu-btn-restart:hover:not(:disabled){
+  background:linear-gradient(135deg,#4f46e5,#4338ca);box-shadow:0 4px 12px rgba(79,70,229,.4);
+}
+.pu-spin{display:inline-block;animation:pu-spin 1s linear infinite}
+@keyframes pu-spin{to{transform:rotate(360deg)}}
+
+.pu-filter{
+  flex:0 0 210px;border:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.15));height:32px;box-sizing:border-box;
+  background:#ffffff;color:var(--dsw-alias-label-primary,#1f2937);border-radius:8px;
+  padding:5px 12px;font:inherit;font-size:13px;transition:border-color .15s,box-shadow .15s;
+  box-shadow:0 1px 2px rgba(0,0,0,.04);
+}
+.pu-filter:focus{outline:none;border-color:var(--dsw-alias-brand-primary,#2563eb);box-shadow:0 0 0 2px rgba(37,99,235,.15)}
+
+.pu-section{display:flex;flex-direction:column;gap:8px;margin-top:4px}
+.pu-section-head{display:flex;align-items:center;gap:8px;margin:0;padding:2px 8px}
+.pu-section-title{font-size:13.5px;font-weight:600;line-height:22px}
+.pu-count{
+  background:var(--dsw-alias-bg-layer-2,rgba(0,0,0,.08));
+  color:var(--dsw-alias-label-secondary,#666);font-size:11px;font-weight:600;
+  padding:1px 7px;border-radius:10px;
+}
+.pu-list{
+  display:flex;flex-direction:column;gap:2px;
+  border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.08));
+  border-radius:12px;padding:4px;box-shadow:0 1px 3px rgba(0,0,0,.02);
+  background:#ffffff !important;
+}
+.pu-head-row{
+  display:grid;grid-template-columns:var(--pu-cols);gap:12px;align-items:center;
+  padding:6px 12px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.06));
+}
+.pu-head-cell{font-size:11.5px;font-weight:600;color:var(--dsw-alias-label-tertiary,#71717a);letter-spacing:.02em}
 .pu-head-actions{text-align:right}
+.pu-row{
+  display:grid;grid-template-columns:var(--pu-cols);align-items:center;gap:12px;
+  padding:8px 12px;border-radius:8px;min-width:0;transition:background .12s ease;
+}
+.pu-row:hover{background:var(--dsw-alias-interactive-bg-hover,var(--dsw-alias-bg-layer-2,rgba(0,0,0,.03)))}
 .pu-cell{min-width:0}
 .pu-main{display:flex;align-items:center;gap:10px;min-width:0}
-.pu-check{width:16px;height:16px;flex:none;accent-color:var(--dsw-alias-brand-primary);
-  cursor:pointer;margin:0}
+.pu-check{width:16px;height:16px;flex:none;accent-color:var(--dsw-alias-brand-primary,#2563eb);cursor:pointer;margin:0}
 .pu-check-slot{width:16px;flex:none}
-.pu-name{display:flex;flex-direction:column;gap:1px;min-width:0}
-.pu-name-title{font-size:14px;font-weight:500;line-height:20px;overflow:hidden;
-  text-overflow:ellipsis;white-space:nowrap}
-.pu-name-pkg{font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary);
+.pu-name{display:flex;flex-direction:column;gap:2px;min-width:0}
+.pu-name-title{font-size:13.5px;font-weight:600;line-height:20px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pu-name-pkg{
+  font-size:11.5px;line-height:16px;color:var(--dsw-alias-label-tertiary,#71717a);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-  font-family:var(--dsw-font-mono,ui-monospace,SFMono-Regular,Menlo,monospace)}
-.pu-versions{display:flex;align-items:baseline;gap:6px;white-space:nowrap;font-size:12.5px}
-.pu-version-old{color:var(--dsw-alias-label-tertiary)}
-.pu-arrow{color:var(--dsw-alias-label-tertiary);font-size:11px}
-.pu-version-new{font-weight:500}
+  font-family:var(--dsw-font-mono,ui-monospace,SFMono-Regular,Menlo,monospace);
+}
+.pu-versions{display:flex;align-items:center;gap:6px;white-space:nowrap;font-size:12px}
+.pu-version-old{color:var(--dsw-alias-label-tertiary,#71717a);font-family:var(--dsw-font-mono,ui-monospace,Menlo,monospace)}
+.pu-arrow{color:var(--dsw-alias-label-tertiary,#a1a1aa);font-size:11px}
+.pu-version-new{
+  font-weight:600;font-family:var(--dsw-font-mono,ui-monospace,Menlo,monospace);
+  background:rgba(16,185,129,.12);color:#059669;padding:2px 8px;border-radius:6px;
+}
 .pu-mono{font-family:var(--dsw-font-mono,ui-monospace,SFMono-Regular,Menlo,monospace)}
-.pu-dim{color:var(--dsw-alias-label-tertiary);font-size:12px}
-.pu-err{color:var(--dsw-alias-state-error-primary);font-size:12px}
+.pu-dim{color:var(--dsw-alias-label-tertiary,#71717a);font-size:12px}
+.pu-err{color:#ef4444;font-size:12px}
 .pu-note{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
-.pu-badge{display:inline-flex;align-items:center;border-radius:4px;padding:0 6px;
-  font-size:11px;line-height:18px;white-space:nowrap;font-weight:500}
-.pu-badge-blocked{background:var(--dsw-alias-state-warn-tertiary,rgba(191,90,0,.12));
-  color:var(--dsw-alias-state-warn-primary)}
-.pu-badge-muted{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}
+.pu-status-tag{
+  display:inline-flex;align-items:center;padding:2px 8px;border-radius:6px;
+  font-size:11.5px;font-weight:500;background:rgba(0,0,0,.05);color:#52525b;
+}
 .pu-actions{display:flex;gap:6px;justify-content:flex-end;align-items:center;flex-wrap:nowrap}
-.pu-actions .pu-btn{justify-content:center}
-.pu-empty{padding:48px 16px;text-align:center;color:var(--dsw-alias-label-tertiary);font-size:13px}
-.pu-error{color:var(--dsw-alias-state-error-primary);font-size:12px;white-space:pre-wrap;
-  font-family:var(--dsw-font-mono,ui-monospace,Menlo,monospace)}
-.pu-task{display:flex;flex-direction:column;gap:10px;padding:12px 14px;
-  border-radius:var(--dsw-radius-lg,10px);background:var(--dsw-alias-bg-layer-1)}
-.pu-task-head{display:flex;align-items:center;gap:10px;font-size:13px}
-.pu-bar-track{height:3px;border-radius:2px;background:var(--dsw-alias-border-l1);overflow:hidden}
-.pu-bar-fill{height:100%;background:var(--dsw-alias-label-primary);transition:width .25s ease}
-.pu-progress{display:flex;flex-direction:column;gap:4px}
-.pu-progress-item{display:flex;justify-content:space-between;gap:12px;font-size:12px}
-.pu-token{display:flex;flex-direction:column;gap:10px;padding:14px 16px;
-  border-radius:var(--dsw-radius-lg,10px);background:var(--dsw-alias-bg-layer-1)}
-.pu-token-head{display:flex;align-items:baseline;gap:10px;font-size:13px}
-.pu-token-hint{margin:0;font-size:12px;line-height:19px;color:var(--dsw-alias-label-tertiary)}
-.pu-token-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.pu-token-input{flex:1 1 280px;min-width:220px;
-  font-family:var(--dsw-font-mono,ui-monospace,SFMono-Regular,Menlo,monospace)}
-.pu-ok{color:var(--dsw-alias-state-success-primary);font-size:12px}
-.pu-modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;
-  align-items:center;justify-content:center;z-index:1000;padding:24px}
-.pu-modal{background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);
-  border-radius:var(--dsw-radius-xl,14px);max-width:520px;width:100%;padding:22px;
-  display:flex;flex-direction:column;gap:14px;box-shadow:0 18px 48px rgba(0,0,0,.3)}
-.pu-modal h3{margin:0;font-size:15px;font-weight:500;line-height:22px}
-.pu-modal p{margin:0;font-size:13px;line-height:21px;color:var(--dsw-alias-label-secondary)}
+
+.pu-empty{padding:48px 16px;text-align:center;color:var(--dsw-alias-label-tertiary,#71717a);font-size:13px}
+.pu-error{color:#ef4444;font-size:12px;white-space:pre-wrap;font-family:var(--dsw-font-mono,monospace)}
+
+.pu-task{
+  display:flex;flex-direction:column;gap:12px;padding:14px 18px;
+  border-radius:12px;background:#ffffff !important;
+  border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.08));box-shadow:0 4px 16px rgba(0,0,0,.05);
+}
+.pu-task-head{display:flex;align-items:center;gap:12px;font-size:13.5px;font-weight:600}
+.pu-bar-track{height:5px;border-radius:3px;background:rgba(0,0,0,.08);overflow:hidden}
+.pu-bar-fill{height:100%;background:linear-gradient(90deg,#2563eb,#10b981);transition:width .25s ease}
+.pu-progress{display:flex;flex-direction:column;gap:6px}
+.pu-progress-item{display:flex;justify-content:space-between;gap:12px;font-size:12px;padding:2px 0}
+
+.pu-restart-banner{
+  display:flex;align-items:center;justify-content:space-between;gap:16px;
+  padding:14px 18px;border-radius:12px;
+  background:linear-gradient(135deg,rgba(99,102,241,.09),rgba(16,185,129,.09));
+  border:1px solid rgba(99,102,241,.28);margin-top:6px;
+}
+.pu-restart-info{display:flex;flex-direction:column;gap:2px}
+.pu-restart-title{font-size:13.5px;font-weight:600;color:var(--dsw-alias-label-primary,#1f2937)}
+.pu-restart-desc{font-size:12px;color:var(--dsw-alias-label-secondary,#666)}
+
+.pu-modal-backdrop{
+  position:fixed;inset:0;background:rgba(0,0,0,.35);backdrop-filter:blur(6px);
+  display:flex;align-items:center;justify-content:center;z-index:1000;padding:24px;
+}
+.pu-modal{
+  background-color:#ffffff !important;
+  color:#1f2937 !important;
+  border-radius:16px;border:1px solid rgba(0,0,0,.08);
+  max-width:440px;width:100%;padding:20px;display:flex;flex-direction:column;gap:12px;
+  box-shadow:0 24px 60px -12px rgba(0,0,0,.25),0 0 1px rgba(0,0,0,.15);
+  box-sizing:border-box;
+}
+.pu-modal h3{margin:0;font-size:15px;font-weight:600;line-height:22px}
+.pu-modal p{margin:0;font-size:12.5px;line-height:20px;color:#71717a}
 .pu-modal-foot{display:flex;justify-content:flex-end;gap:8px}
+
+.pu-settings-group{
+  display:flex;flex-direction:column;
+  border:1px solid rgba(0,0,0,.08);border-radius:12px;
+  background:#f9fafb !important;overflow:hidden;margin:6px 0;
+}
+.pu-settings-row{
+  display:flex;align-items:center;justify-content:space-between;
+  gap:16px;padding:12px 14px;
+}
+.pu-settings-row:not(:last-child){
+  border-bottom:1px solid rgba(0,0,0,.06);
+}
+.pu-settings-label{
+  display:flex;flex-direction:column;gap:2px;
+}
+.pu-settings-title{
+  font-size:13px;font-weight:600;color:#18181b;
+}
+.pu-settings-sub{
+  font-size:11.5px;color:#71717a;
+}
+.pu-select{
+  appearance:none;-webkit-appearance:none;
+  padding:5px 28px 5px 10px;font-size:12.5px;font-weight:500;
+  border:1px solid rgba(0,0,0,.14);border-radius:8px;
+  background-color:#ffffff;color:#18181b;cursor:pointer;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 8px center;
+  transition:border-color .15s ease,box-shadow .15s ease;
+  box-shadow:0 1px 2px rgba(0,0,0,.04);
+}
+.pu-select:focus{
+  outline:none;border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,.15);
+}
+.pu-toggle-switch{
+  position:relative;width:38px;height:22px;border-radius:11px;
+  background:#d4d4d8;border:none;cursor:pointer;padding:0;
+  transition:background-color .2s ease;flex:none;box-sizing:border-box;
+}
+.pu-toggle-switch.pu-checked{
+  background:#10b981;
+}
+.pu-toggle-knob{
+  position:absolute;top:2px;left:2px;width:18px;height:18px;
+  border-radius:50%;background:#ffffff;
+  box-shadow:0 1px 3px rgba(0,0,0,.25);
+  transition:transform .2s ease;
+}
+.pu-toggle-switch.pu-checked .pu-toggle-knob{
+  transform:translateX(16px);
+}
+
+.pu-token{display:flex;flex-direction:column;gap:10px;padding:14px 16px;border-radius:10px;background:#ffffff;border:1px solid rgba(0,0,0,.08)}
+.pu-token-head{display:flex;align-items:baseline;gap:10px;font-size:13px}
+.pu-token-hint{margin:0;font-size:12px;line-height:19px;color:#71717a}
+.pu-token-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.pu-token-input{flex:1 1 280px;min-width:220px;font-family:var(--dsw-font-mono,monospace)}
+.pu-ok{color:#10b981;font-size:12px}
+
+html[data-ds-dark-theme] .pu-modal, body[data-ds-dark-theme] .pu-modal{
+  background-color:#1c1c1f !important;color:#f4f4f5 !important;border-color:rgba(255,255,255,.12) !important;
+}
+html[data-ds-dark-theme] .pu-settings-group, body[data-ds-dark-theme] .pu-settings-group{
+  background-color:#27272a !important;border-color:rgba(255,255,255,.08) !important;
+}
+html[data-ds-dark-theme] .pu-settings-title, body[data-ds-dark-theme] .pu-settings-title{
+  color:#f4f4f5 !important;
+}
+html[data-ds-dark-theme] .pu-select, body[data-ds-dark-theme] .pu-select{
+  background-color:#18181b !important;border-color:rgba(255,255,255,.15) !important;color:#f4f4f5 !important;
+}
+html[data-ds-dark-theme] .pu-list, body[data-ds-dark-theme] .pu-list,
+html[data-ds-dark-theme] .pu-metric-chip, body[data-ds-dark-theme] .pu-metric-chip,
+html[data-ds-dark-theme] .pu-btn, body[data-ds-dark-theme] .pu-btn,
+html[data-ds-dark-theme] .pu-filter, body[data-ds-dark-theme] .pu-filter,
+html[data-ds-dark-theme] .pu-task, body[data-ds-dark-theme] .pu-task{
+  background-color:#1c1c1f !important;border-color:rgba(255,255,255,.08) !important;color:#f4f4f5 !important;
+}
+html[data-ds-dark-theme] .pu-status-tag, body[data-ds-dark-theme] .pu-status-tag{
+  background:rgba(255,255,255,.08) !important;color:#a1a1aa !important;
+}
+
 @media (max-width:860px){
-  .pu-root{--pu-cols:minmax(0,1fr) 140px}
+  .pu-root{--pu-cols:minmax(0,1fr) 130px}
+  .pu-metrics{grid-template-columns:1fr 1fr}
   .pu-head-cell:nth-child(2),.pu-row>.pu-cell:nth-child(2){display:none}
 }
 `
@@ -477,6 +689,18 @@ window.__ModuleLoader__.load({
       if (/^git@([^:]+):/.test(text)) text = text.replace(/^git@([^:]+):/, 'https://$1/')
       if (text.startsWith('git+')) text = text.slice(4)
       return text.replace(/#.*$/, '').replace(/\.git$/, '')
+    }
+
+    /** Compose full git spec preserving monorepo subdirectories. */
+    function composeGitSpec(entry, targetRef) {
+      const specText = String(entry.spec ?? entry.probe?.url ?? '')
+      const base = normaliseGitUrl(entry.probe?.url ?? entry.spec)
+      const parsed = classifySpec(specText)
+      const ref = targetRef ?? entry.probe?.head ?? parsed.ref ?? 'HEAD'
+      if (parsed.subdirectory) {
+        return `${base}#${ref}&path:/${parsed.subdirectory}`
+      }
+      return `${base}#${ref}`
     }
 
     /** Fetch JSON with a timeout. */
@@ -837,6 +1061,85 @@ window.__ModuleLoader__.load({
       const selectedIds = Object.keys(state.selected)
       const busy = taskStore.state?.running === true
 
+      const safeUpdates = React.useMemo(() => {
+        return groups.updates.filter((entry) => entry.dsh?.ok !== false)
+      }, [groups.updates])
+
+      const [scheduleOpen, setScheduleOpen] = React.useState(false)
+      const [schedule, setSchedule] = React.useState(() => {
+        try {
+          const raw = localStorage.getItem('dsh_updater_schedule')
+          return raw ? JSON.parse(raw) : { freq: 'off', autoApply: false }
+        } catch {
+          return { freq: 'off', autoApply: false }
+        }
+      })
+      const saveSchedule = React.useCallback((patch) => {
+        setSchedule((prev) => {
+          const next = { ...prev, ...patch }
+          try { localStorage.setItem('dsh_updater_schedule', JSON.stringify(next)) } catch (_) {}
+          return next
+        })
+      }, [])
+
+      React.useEffect(() => {
+        if (schedule.freq === 'off') return
+        const hours = schedule.freq === '6h' ? 6 : schedule.freq === 'weekly' ? 168 : 24
+        const ms = hours * 3600 * 1000
+        const timer = setInterval(() => { void runScan() }, ms)
+        return () => clearInterval(timer)
+      }, [schedule.freq, runScan])
+
+      const [restarting, setRestarting] = React.useState(false)
+      const [restartMsg, setRestartMsg] = React.useState(null)
+
+      const handleRestart = React.useCallback(async () => {
+        const raw = globalThis.__DSH_LAN_GATE_RESTART__
+        const token = raw?.token
+        const restartPath = raw?.restartPath || '/__lan-gate/restart'
+        const pingPath = raw?.pingPath || '/__lan-gate/ping'
+        if (!token) {
+          setRestartMsg({ ok: false, text: t('restartNotAvailable') })
+          return
+        }
+        setRestarting(true)
+        setRestartMsg({ ok: true, text: t('restartingInstance') })
+        try {
+          const res = await fetch(restartPath, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-dsh-lan-gate-token': token,
+            },
+            body: JSON.stringify({ from: 'plugin-updater' }),
+          })
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}))
+            throw new Error(data.error || `HTTP ${res.status}`)
+          }
+          const oldPid = raw.pid
+          const start = Date.now()
+          const poll = setInterval(async () => {
+            try {
+              const ping = await fetch(pingPath, { cache: 'no-store' }).then((r) => r.json()).catch(() => null)
+              if (ping && ping.ok && ping.pid && ping.pid !== oldPid) {
+                clearInterval(poll)
+                setRestartMsg({ ok: true, text: t('restartSuccess') })
+                setTimeout(() => window.location.reload(), 600)
+              }
+            } catch (_) {}
+            if (Date.now() - start > 50000) {
+              clearInterval(poll)
+              window.location.reload()
+            }
+          }, 800)
+        } catch (err) {
+          setRestarting(false)
+          setRestartMsg({ ok: false, text: `${t('restartFailed')}: ${String(err?.message || err)}` })
+        }
+      }, [t])
+
       /**
        * Run the chosen items in the background, one at a time.
        *
@@ -886,12 +1189,28 @@ window.__ModuleLoader__.load({
         startRun(plan)
       }, [entries, selectedIds, startRun, state.selected, t])
 
+      const applyAll = React.useCallback(() => {
+        if (safeUpdates.length === 0) return
+        const plan = safeUpdates.map((entry) => ({ entry, accept: false }))
+        startRun(plan)
+      }, [safeUpdates, startRun])
+
+      React.useEffect(() => {
+        if (schedule.autoApply && safeUpdates.length > 0 && !busy && state.phase === 'ready') {
+          applyAll()
+        }
+      }, [schedule.autoApply, safeUpdates.length, busy, state.phase, applyAll])
+
       const requestApply = React.useCallback((id, entry) => {
         if (entry === undefined) return
-        // A plugin whose declared dsh range is unmet needs an explicit choice,
-        // because accepting it can crash the application.
-        setPending({ kind: entry.dsh.ok ? 'confirm' : 'accept', id, entry })
-      }, [])
+        if (entry.dsh?.ok) {
+          // 兼容版本直接执行更新，杜绝弹出阻断式遮罩造成黑屏闪烁
+          startRun([{ entry, accept: false }])
+          return
+        }
+        // 只有当插件版本高于 dsh 不兼容需要豁免风险时才要求确认
+        setPending({ kind: 'accept', id, entry })
+      }, [startRun])
 
       const confirmPending = React.useCallback(() => {
         if (pending === null) return
@@ -1009,7 +1328,7 @@ window.__ModuleLoader__.load({
             unmet ? h('button', { type: 'button', className: 'pu-btn pu-btn-sm', disabled: busy, onClick: () => requestApply(entry.id, entry) }, t('accept')) : null,
             exempted ? h('button', { type: 'button', className: 'pu-btn pu-btn-sm', disabled: busy, onClick: () => void undoExemption(entry) }, t('undoExemption')) : null,
             entry.status === 'builtin' || entry.status === 'current' || entry.status === 'local' || entry.status === 'unknown'
-              ? h('span', { className: 'pu-dim' }, t(entry.status === 'builtin' ? 'builtinNote' : entry.status === 'current' ? 'upToDate' : entry.status === 'local' ? 'local' : 'unknown'))
+              ? h('span', { className: 'pu-status-tag' }, t(entry.status === 'builtin' ? 'builtinNote' : entry.status === 'current' ? 'upToDate' : entry.status === 'local' ? 'local' : 'unknown'))
               : null,
             entry.status === 'error' ? h('span', { className: 'pu-err pu-note' }, entry.probe?.note ?? t('errorNote')) : null,
           ),
@@ -1103,6 +1422,126 @@ window.__ModuleLoader__.load({
               token.notice === null ? null : h('div', { className: 'pu-note' }, token.notice),
             )
 
+      const scheduleModal =
+        scheduleOpen === false
+          ? null
+          : h(
+              'div',
+              { className: 'pu-modal-backdrop', role: 'presentation', onClick: (event) => event.target === event.currentTarget && setScheduleOpen(false) },
+              h(
+                'div',
+                { className: 'pu-modal pu-schedule-dialog', role: 'dialog', 'aria-modal': 'true' },
+                h(
+                  'div',
+                  { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: 4 } },
+                  h('h3', { style: { margin: 0, fontSize: 15, fontWeight: 600 } }, t('scheduleTitle')),
+                  h('button', {
+                    type: 'button',
+                    className: 'pu-btn pu-btn-sm',
+                    style: { border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 16, padding: '2px 8px', color: '#71717a', boxShadow: 'none' },
+                    onClick: () => setScheduleOpen(false),
+                  }, '✕'),
+                ),
+                h('p', { style: { margin: '0 0 10px', fontSize: 12.5, color: '#71717a' } }, t('scheduleDesc')),
+                h(
+                  'div',
+                  { className: 'pu-settings-group' },
+                  h(
+                    'div',
+                    { className: 'pu-settings-row' },
+                    h(
+                      'div',
+                      { className: 'pu-settings-label' },
+                      h('div', { className: 'pu-settings-title' }, t('scheduleFreq')),
+                      h('div', { className: 'pu-settings-sub' }, t('scheduleFreqSub')),
+                    ),
+                    h(
+                      'select',
+                      {
+                        className: 'pu-select',
+                        value: schedule.freq || 'off',
+                        onChange: (e) => saveSchedule({ freq: e.target.value }),
+                      },
+                      h('option', { value: 'off' }, t('scheduleOff')),
+                      h('option', { value: '6h' }, t('schedule6h')),
+                      h('option', { value: 'daily' }, t('scheduleDaily')),
+                      h('option', { value: 'weekly' }, t('scheduleWeekly')),
+                    ),
+                  ),
+                  h(
+                    'div',
+                    { className: 'pu-settings-row' },
+                    h(
+                      'div',
+                      { className: 'pu-settings-label' },
+                      h('div', { className: 'pu-settings-title' }, t('scheduleAutoApply')),
+                      h('div', { className: 'pu-settings-sub' }, t('scheduleAutoApplyHint')),
+                    ),
+                    h(
+                      'button',
+                      {
+                        type: 'button',
+                        role: 'switch',
+                        'aria-checked': schedule.autoApply === true,
+                        className: `pu-toggle-switch ${schedule.autoApply === true ? 'pu-checked' : ''}`,
+                        onClick: () => saveSchedule({ autoApply: !schedule.autoApply }),
+                      },
+                      h('span', { className: 'pu-toggle-knob' }),
+                    ),
+                  ),
+                ),
+                h(
+                  'div',
+                  { className: 'pu-modal-foot', style: { marginTop: 10 } },
+                  h('button', { type: 'button', className: 'pu-btn pu-btn-done', onClick: () => setScheduleOpen(false) }, t('scheduleClose')),
+                ),
+              ),
+            )
+
+      const metricBar =
+        report === null
+          ? null
+          : h(
+              'div',
+              { className: 'pu-metrics' },
+              h(
+                'div',
+                { className: 'pu-metric-chip' },
+                h('span', { className: 'pu-metric-label' }, t('metricsTotal')),
+                h('span', { className: 'pu-metric-val' }, String(entries.length)),
+              ),
+              h(
+                'div',
+                { className: 'pu-metric-chip' },
+                h('span', { className: 'pu-metric-label' }, t('metricsUpdates')),
+                h(
+                  'span',
+                  { className: safeUpdates.length > 0 ? 'pu-metric-val pu-success' : 'pu-metric-val' },
+                  safeUpdates.length > 0 ? `⚡ ${safeUpdates.length}` : '0',
+                ),
+              ),
+              h(
+                'div',
+                { className: 'pu-metric-chip' },
+                h('span', { className: 'pu-metric-label' }, t('metricsBlocked')),
+                h(
+                  'span',
+                  { className: groups.blocked.length > 0 ? 'pu-metric-val pu-warn' : 'pu-metric-val' },
+                  String(groups.blocked.length),
+                ),
+              ),
+              h(
+                'div',
+                { className: 'pu-metric-chip' },
+                h('span', { className: 'pu-metric-label' }, t('metricsLastCheck')),
+                h(
+                  'span',
+                  { className: 'pu-metric-val', style: { fontSize: 13, fontWeight: 500 } },
+                  new Date(report.scannedAt).toLocaleTimeString(),
+                ),
+              ),
+            )
+
       const header = h(
         'div',
         { className: 'pu-toolbar' },
@@ -1111,16 +1550,17 @@ window.__ModuleLoader__.load({
           { type: 'button', className: 'pu-btn', disabled: busy || state.phase === 'checking', title: t('refreshTip'), onClick: () => void runScan() },
           state.phase === 'checking' ? t('checking') : t('refresh'),
         ),
+        safeUpdates.length > 0
+          ? h(
+              'button',
+              { type: 'button', className: 'pu-btn pu-btn-all', disabled: busy, onClick: applyAll, title: t('updateAllTip') },
+              `⚡ ${t('updateAll')} (${safeUpdates.length})`,
+            )
+          : null,
         h('input', { className: 'pu-filter', type: 'search', placeholder: t('searchPlaceholder'), value: query, onChange: (event) => setQuery(event.target.value) }),
+        h('button', { type: 'button', className: 'pu-btn', 'aria-expanded': scheduleOpen, onClick: () => setScheduleOpen(!scheduleOpen) }, '⏰ ' + t('scheduleBtn')),
         h('button', { type: 'button', className: 'pu-btn', 'aria-expanded': token.open, onClick: toggleToken }, t('tokenOpen')),
         h('span', { className: 'pu-spacer' }),
-        report === null
-          ? null
-          : h(
-              'span',
-              { className: 'pu-context' },
-              `${entries.length} ${t('summary:total')} · ${groups.updates.length} ${t('summary:updates')} · ${groups.blocked.length} ${t('summary:blocked')} ${report.runtime} · ${new Date(report.scannedAt).toLocaleTimeString()}`,
-            ),
         selectedIds.length === 0
           ? null
           : h(
@@ -1172,6 +1612,7 @@ window.__ModuleLoader__.load({
             )
 
       const task = useBackgroundTask()
+      const showRestartBanner = task !== null && !task.running && task.done > 0
       const taskPanel =
         task === null
           ? null
@@ -1186,7 +1627,7 @@ window.__ModuleLoader__.load({
                 h('span', { className: 'pu-spacer' }),
                 task.running
                   ? null
-                  : h('button', { type: 'button', className: 'pu-btn', onClick: () => publishTask(null) }, t('dismiss')),
+                  : h('button', { type: 'button', className: 'pu-btn pu-btn-sm', onClick: () => publishTask(null) }, t('dismiss')),
               ),
               h(
                 'div',
@@ -1218,15 +1659,40 @@ window.__ModuleLoader__.load({
                   ),
                 ),
               ),
+              showRestartBanner
+                ? h(
+                    'div',
+                    { className: 'pu-restart-banner' },
+                    h(
+                      'div',
+                      { className: 'pu-restart-info' },
+                      h('div', { className: 'pu-restart-title' }, '✨ ' + t('restartInstance')),
+                      h('div', { className: 'pu-restart-desc' }, t('restartHint')),
+                      restartMsg === null ? null : h('div', { className: restartMsg.ok ? 'pu-ok' : 'pu-err', style: { fontSize: 12, marginTop: 4 } }, restartMsg.text),
+                    ),
+                    h(
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'pu-btn pu-btn-restart',
+                        disabled: restarting,
+                        onClick: () => void handleRestart(),
+                      },
+                      restarting ? [h('span', { className: 'pu-spin', key: 'sp' }, '🔄'), ' ', t('restartingInstance')] : ['🔄 ', t('restartInstance')],
+                    ),
+                  )
+                : null,
             )
 
       return h(
         'div',
         { className: 'pu-root' },
+        metricBar,
         header,
         tokenPanel,
         body(),
         modal,
+        scheduleModal,
         taskPanel,
         report === null || (groups.updates.length === 0 && groups.blocked.length === 0) ? null : h('div', { className: 'pu-note' }, t('reloadHint')),
       )
@@ -1283,7 +1749,7 @@ window.__ModuleLoader__.load({
       }
       const target = entry.probe?.compatibleLatest ?? undefined
       if (entry.kind === 'git') {
-        const spec = normaliseGitUrl(entry.probe?.url ?? entry.spec)
+        const spec = composeGitSpec(entry)
         return reinstallBundle(ctx, t, entry, spec)
       }
       if (target === undefined) return { ok: false, message: t('noCompatible') }
