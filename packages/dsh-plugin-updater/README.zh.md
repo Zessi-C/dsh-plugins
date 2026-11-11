@@ -25,6 +25,15 @@
 
 **Agent 工具**：`plugin_update`，`action: "check"` 输出报告，`action: "apply"` 执行计划。除非在配置里把 `agentToolMirrorsPlan` 设为 `true`，否则拒绝执行，因为更新插件会替换用户正在运行的代码。
 
+### 定时更新（宿主侧）
+
+页面右上角的 **⏰ 定时更新** 设置检查频率和是否自动安装安全更新。这两项写进 profile 里 `plugin-updater` 行的配置（`autoCheckMinutes`、`autoApply`），由宿主按间隔执行，**关闭页面、关掉浏览器之后仍然继续**：
+
+- 宿主每分钟比对一次时间，到点才真正探测各源仓库；上次尝试的时间记录在 profile 的 `.plugin-manager/updater-schedule.json`，所以重启 dsh 不会立刻重新探测。
+- 自动安装只覆盖页面里同样算“安全”的更新：有兼容当前 dsh 的新版本。需要版本豁免、或需要用户确认的插件永远不会被自动改动。
+- 单次探测失败会等下一个间隔再试，不会每分钟重试。
+- 设置通过 Harness 的 Settings 服务写入，字段是 volatile 的，所以保存后无需重启；profile 不可写时对话框会直接说明。
+
 ## 私有仓库怎么更新
 
 私有仓库不能匿名读取，必须提供凭据。本插件按以下顺序取 token：
@@ -78,6 +87,8 @@ Harness 拒绝加载声明要求不满足的插件。只有两条稳妥的路：
 | `fallbackRegistry` | `https://registry.npmjs.org/` | profile 的 pnpm 仓库无响应时改问这个。 |
 | `agentToolMirrorsPlan` | `false` | 允许 `plugin_update` 的 `apply` 真正改动插件。 |
 | `gitTokenEnv` | `DSH_PLUGIN_UPDATER_TOKEN` | 私有仓库 token 的变量名。 |
+| `autoCheckMinutes` | `0` | 后台检查间隔（分钟），`0` 表示关闭。volatile；页面上的“定时更新”写的就是它。 |
+| `autoApply` | `false` | 后台检查发现兼容更新时自动安装。volatile；默认关闭。 |
 
 ## 依赖与限制
 
@@ -85,5 +96,6 @@ Harness 拒绝加载声明要求不满足的插件。只有两条稳妥的路：
 - 被 pnpm 拦下的构建脚本会以失败形式报出包名；在 `pnpm-workspace.yaml` 里批准后重试，和插件页的处理一致。
 - 页面提示 `restart-required` 时需要重启 dsh：新的模块不会被就地加载。
 - 随 dsh 安装的插件从不覆盖，否则会遮蔽 dsh 自带的副本。
+- 定时更新由宿主执行，不依赖浏览器；但 `probe: false` 时后台也只做本地扫描，不联网。
 
 MIT 许可。

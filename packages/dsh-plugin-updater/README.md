@@ -25,6 +25,15 @@ Select rows and press **应用所选 / Apply selected**. Each row is installed t
 
 **Agent tool.** `plugin_update` with `action: "check"` prints the report; `action: "apply"` runs a plan. Applying is refused unless the plugin's config sets `agentToolMirrorsPlan: true`, because a plugin update replaces code the user is running.
 
+### Background schedule
+
+The **Auto Update** dialog sets the check interval and whether safe updates are installed automatically. Both choices are written to this row's Config (`autoCheckMinutes`, `autoApply`) and executed by the Host, so checks continue after the page or the browser closes:
+
+- The Host compares the clock once a minute and probes the sources only when the interval has elapsed; the last attempt is recorded in the profile's `.plugin-manager/updater-schedule.json`, so restarting dsh does not re-probe immediately.
+- Automatic application covers only what the page also calls safe: an available update whose dsh requirement is met. Plugins that need an exemption or a consent answer are never changed automatically.
+- A failed probe waits for the next interval instead of retrying every minute.
+- The fields are volatile and written through the Harness Settings service, so a save needs no restart; the dialog says so when the profile is not writable.
+
 ## How the dsh-range case is handled
 
 The Harness refuses to load a plugin whose declared dsh requirement the runtime does not satisfy (`dsh-app-boot` → `evaluatePluginCompatibility`). There are exactly two honest ways out:
@@ -44,6 +53,8 @@ Set on the `plugin-updater` row in the profile's `cordis.patch.yml`:
 | `probe` | `true` | `false` reports the plugin table without network access. |
 | `fallbackRegistry` | `https://registry.npmjs.org/` | Registry asked when the profile's pnpm registry does not answer. |
 | `agentToolMirrorsPlan` | `false` | Let `plugin_update action: "apply"` change plugins. |
+| `autoCheckMinutes` | `0` | Background check interval in minutes; `0` disables it. Volatile; the Auto Update dialog writes it. |
+| `autoApply` | `false` | Install compatible updates found by a background check. Volatile; off by default. |
 
 ## Private repositories
 
@@ -82,5 +93,6 @@ in a report.
 - Build scripts blocked by pnpm surface as a failure naming the packages; approve them in `pnpm-workspace.yaml` and retry, as the Plugins page does.
 - Restart dsh when the page reports `restart-required`: a new module generation is not loaded in place.
 - A plugin shipped with the installation is never overwritten — that would shadow the shipped copy.
+- The background schedule runs in the Host and needs no browser; with `probe: false` it still scans the profile without network access.
 
 MIT licensed.

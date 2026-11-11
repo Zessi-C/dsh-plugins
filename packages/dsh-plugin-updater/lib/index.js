@@ -54,7 +54,7 @@
  * interleave two package-manager runs.
  */
 
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, realpathSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, realpathSync, mkdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 
@@ -190,6 +190,20 @@ export const Config =
           .default('DSH_PLUGIN_UPDATER_TOKEN')
           .description(
             'Environment variable holding a token for private repositories. Read from the dsh credential store first, then the environment.',
+          ),
+        autoCheckMinutes: schema
+          .number()
+          .default(0)
+          .volatile()
+          .description(
+            'Minutes between background update checks; 0 disables them. Volatile so the Plugins page writes it through Settings and the running host picks it up without a restart.',
+          ),
+        autoApply: schema
+          .boolean()
+          .default(false)
+          .volatile()
+          .description(
+            'Let each background check install the compatible updates it finds. Volatile for the same reason as autoCheckMinutes; plugins that need consent are never applied automatically.',
           ),
       })
 
@@ -403,6 +417,54 @@ function readJson(file) {
   }
 }
 
+/**
+ * A copy of a value that lossless JSON can carry.
+ *
+ * Tool output is validated by the Harness before it reaches the model, and an
+ * object member holding `undefined` — what `entry.probe?.note` or an absent
+ * `lastPlan` produces — is not a JSON value, so the whole answer is refused.
+ * Dropping those members keeps the report readable instead.
+ * @param {unknown} value - Candidate value.
+ * @returns {unknown} The same shape without `undefined` object members.
+ */
+function jsonSafe(value) {
+  if (Array.isArray(value)) return value.map((item) => jsonSafe(item))
+  if (value !== null && typeof value === 'object') {
+    const result = {}
+    for (const [key, item] of Object.entries(value)) {
+      if (item !== undefined) result[key] = jsonSafe(item)
+    }
+    return result
+  }
+  return value
+}
+
+/** Where the background schedule records its last attempt, inside the profile. */
+function scheduleStateFile(profileDir) {
+  return profileDir === undefined ? undefined : join(profileDir, '.plugin-manager', 'updater-schedule.json')
+}
+
+/** The last background check's time, or undefined when the profile has none. */
+function readLastCheckAt(profileDir) {
+  const file = scheduleStateFile(profileDir)
+  if (file === undefined) return undefined
+  const at = readJson(file)?.lastCheckAt
+  const parsed = typeof at === 'string' ? Date.parse(at) : NaN
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+/** Record one background attempt so a restart does not probe again immediately. */
+function writeLastCheckAt(profileDir, at) {
+  const file = scheduleStateFile(profileDir)
+  if (file === undefined) return
+  try {
+    mkdirSync(join(profileDir, '.plugin-manager'), { recursive: true })
+    writeFileSync(file, `${JSON.stringify({ lastCheckAt: new Date(at).toISOString() }, undefined, 2)}\n`)
+  } catch {
+    /* a read-only profile keeps the schedule in memory only */
+  }
+}
+
 /** The localised title a bundle reports, with the package name as fallback. */
 function titleOf(meta, fallback) {
   const title = meta?.title
@@ -463,6 +525,14 @@ class Updater {
     this.options = options
     this.profileDir = ctx.get('profileContext')?.dir
     this.runtimeVersion = readRuntimeVersion()
+    // The background schedule reads the live Config references each time, so a
+    // Settings write takes effect without remounting this plugin.
+    this.schedule = options.schedule ?? (() => ({ minutes: 0, autoApply: false }))
+  }
+
+  /** When the background schedule last attempted a check, or undefined. */
+  lastCheckAt() {
+    return readLastCheckAt(this.profileDir)
   }
 
   // ---------------------------------------------------------------------------
@@ -1314,10 +1384,17 @@ class Updater {
   /** Bounded facts for the agent tool: no long notes, no secrets. */
   async summary() {
     const current = await this.ensureReport({ maxAgeMinutes: 10 })
-    return {
+    const schedule = this.schedule()
+    const lastCheckAt = this.lastCheckAt()
+    return jsonSafe({
       runtimeVersion: current.runtimeVersion,
       scannedAt: current.scannedAt,
       counts: current.counts,
+      schedule: {
+        autoCheckMinutes: schedule.minutes,
+        autoApply: schedule.autoApply,
+        lastCheckAt: lastCheckAt === undefined ? undefined : new Date(lastCheckAt).toISOString(),
+      },
       plugins: current.entries.map((entry) => ({
         id: entry.id,
         name: entry.name,
@@ -1333,7 +1410,7 @@ class Updater {
         note: entry.probe?.note,
       })),
       lastPlan: this.lastPlan ?? undefined,
-    }
+    })
   }
 }
 
@@ -1343,12 +1420,27 @@ class Updater {
  * @param {object} config - The row's Config.
  */
 export function apply(ctx, config) {
+  /**
+   * The live background schedule. Both fields are volatile, so the Client writes
+   * them through Settings and this reader sees them on the next tick without a
+   * remount; plain values are still accepted for a composition without Loader.
+   * @returns {{ minutes: number, autoApply: boolean }}
+   */
+  const readSchedule = () => {
+    const minutes = Number(config?.autoCheckMinutes?.get?.() ?? config?.autoCheckMinutes)
+    const autoApply = config?.autoApply?.get?.() ?? config?.autoApply
+    return {
+      minutes: Number.isFinite(minutes) && minutes > 0 ? minutes : 0,
+      autoApply: autoApply === true,
+    }
+  }
   const options = {
     timeoutMs: Number(config?.timeoutMs ?? 30000),
     probe: config?.probe !== false,
     fallbackRegistry: String(config?.fallbackRegistry ?? 'https://registry.npmjs.org/'),
     agentToolMirrorsPlan: config?.agentToolMirrorsPlan === true,
     gitTokenEnv: String(config?.gitTokenEnv ?? 'DSH_PLUGIN_UPDATER_TOKEN'),
+    schedule: readSchedule,
   }
   const updater = new Updater(ctx, options)
 
@@ -1363,6 +1455,46 @@ export function apply(ctx, config) {
       clearTimeout(timer)
     }
   }, 'dsh-plugin-updater: initial table')
+
+  // Background schedule: a Host timer, so checks keep running while no Plugins
+  // page is open. A tick runs at most once a minute, re-reads the schedule each
+  // time, and records every probe attempt in the profile so a restart does not
+  // repeat it. Automatic application only covers the rows the page itself would
+  // call safe: an available update whose dsh requirement is met. A plugin that
+  // needs an exemption or a consent answer is never changed here.
+  ctx.effect(() => {
+    let disposed = false
+    const tick = async () => {
+      if (disposed) return
+      const { minutes, autoApply } = readSchedule()
+      if (minutes === 0) return
+      const lastCheckAt = updater.lastCheckAt()
+      if (lastCheckAt !== undefined && Date.now() - lastCheckAt < minutes * 60_000) return
+      if (updater.busy) return
+      writeLastCheckAt(updater.profileDir, Date.now())
+      const report = await updater.scan().catch(() => undefined)
+      if (disposed || report === undefined) return
+      updater.lastReport = report
+      if (!autoApply) return
+      const updates = report.entries
+        .filter((entry) => entry.status === 'update' && entry.builtin !== true && entry.dsh?.ok !== false)
+        .map((entry) => ({ id: entry.id }))
+      if (updates.length === 0) return
+      // Reuse the report just scanned instead of probing all over again.
+      await updater.apply({ updates }).catch(() => undefined)
+    }
+    const timer = setInterval(() => {
+      void tick()
+    }, 60_000)
+    const boot = setTimeout(() => {
+      void tick()
+    }, 30_000)
+    return () => {
+      disposed = true
+      clearInterval(timer)
+      clearTimeout(boot)
+    }
+  }, 'dsh-plugin-updater: background schedule')
 
   // Register the agent tool when a tool registry exists in this profile. The
   // callback runs on arrival and its registrations are disposed with this row.

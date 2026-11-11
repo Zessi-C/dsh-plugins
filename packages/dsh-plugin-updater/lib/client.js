@@ -11,6 +11,21 @@ window.__ModuleLoader__.load({
     const TOKEN_REF = 'DSH_PLUGIN_UPDATER_TOKEN'
 
     /**
+     * Profile entry id of this plugin's row, which names its Settings namespace.
+     * The schedule lives in that row's volatile Config, so the Host owns it and
+     * keeps checking after this page is closed.
+     */
+    const SCHEDULE_NS = 'plugin-updater'
+
+    /** The check intervals the dialog offers, in minutes; 0 disables the schedule. */
+    const FREQUENCIES = [
+      { minutes: 0, key: 'scheduleOff' },
+      { minutes: 360, key: 'schedule6h' },
+      { minutes: 1440, key: 'scheduleDaily' },
+      { minutes: 10080, key: 'scheduleWeekly' },
+    ]
+
+    /**
      * The update run in flight.
      *
      * A package update takes as long as pnpm does, and installing any bundle
@@ -129,7 +144,7 @@ window.__ModuleLoader__.load({
       restartFailed: '重启发起失败，请尝试手动刷新或在终端执行 dsh-web-ctl restart',
       scheduleBtn: '定时更新',
       scheduleTitle: '自动检查与更新设置',
-      scheduleDesc: '在后台定期核对插件版本并按策略自动处理。',
+      scheduleDesc: '由宿主在后台定期核对插件版本，并按策略自动处理。',
       scheduleFreq: '检查频率',
       scheduleFreqSub: '定时检索各源仓库的新版本',
       scheduleOff: '已关闭（手动更新）',
@@ -138,6 +153,13 @@ window.__ModuleLoader__.load({
       scheduleWeekly: '每周一次',
       scheduleAutoApply: '自动安装安全更新',
       scheduleAutoApplyHint: '仅自动应用兼容当前 dsh 版本的稳定更新',
+      scheduleAutoApplyOff: '检查频率为“已关闭”，自动安装不会触发。',
+      scheduleHostHint: '由宿主按此间隔检查，关闭本页后仍然生效。',
+      scheduleCustom: '每 {minutes} 分钟',
+      scheduleReadonly: '当前 profile 不可写，无法保存这个设置。',
+      scheduleUnavailable: '设置服务不可用，无法把定时设置写进 profile。',
+      scheduleSaved: '已保存，下一次后台检查起采用。',
+      scheduleSaveFailed: '保存失败：{reason}',
       scheduleClose: '完成',
       metricsTotal: '已装插件',
       metricsUpdates: '可更新',
@@ -230,7 +252,7 @@ window.__ModuleLoader__.load({
       restartFailed: 'Failed to restart instance',
       scheduleBtn: 'Auto Update',
       scheduleTitle: 'Auto-Update Settings',
-      scheduleDesc: 'Periodically check plugin versions and handle updates in the background.',
+      scheduleDesc: 'The host checks plugin versions in the background and handles updates by policy.',
       scheduleFreq: 'Check Frequency',
       scheduleFreqSub: 'Check registries and remotes for new releases',
       scheduleOff: 'Disabled (Manual)',
@@ -239,6 +261,13 @@ window.__ModuleLoader__.load({
       scheduleWeekly: 'Weekly',
       scheduleAutoApply: 'Auto-apply Safe Updates',
       scheduleAutoApplyHint: 'Only applies updates compatible with running dsh',
+      scheduleAutoApplyOff: 'The check interval is off, so auto-apply cannot trigger.',
+      scheduleHostHint: 'Checked by the host at this interval, so it keeps running after this page closes.',
+      scheduleCustom: 'Every {minutes} minutes',
+      scheduleReadonly: 'This profile is not writable, so the setting cannot be saved.',
+      scheduleUnavailable: 'Settings are unavailable, so the schedule cannot be written to the profile.',
+      scheduleSaved: 'Saved; the next background check uses it.',
+      scheduleSaveFailed: 'Could not save: {reason}',
       scheduleClose: 'Done',
       metricsTotal: 'Installed',
       metricsUpdates: 'Updates',
@@ -1066,29 +1095,109 @@ html[data-ds-dark-theme] .pu-status-tag, body[data-ds-dark-theme] .pu-status-tag
       }, [groups.updates])
 
       const [scheduleOpen, setScheduleOpen] = React.useState(false)
-      const [schedule, setSchedule] = React.useState(() => {
-        try {
-          const raw = localStorage.getItem('dsh_updater_schedule')
-          return raw ? JSON.parse(raw) : { freq: 'off', autoApply: false }
-        } catch {
-          return { freq: 'off', autoApply: false }
-        }
+      /**
+       * The Host-side schedule, read from this plugin's own Settings entry.
+       *
+       * Both fields are volatile Config fields: writing them here persists the
+       * profile patch and the running Host re-reads them without a restart, so
+       * the checks keep happening while this page is closed. When Settings is
+       * unavailable the dialog says so instead of pretending to save.
+       */
+      const [schedule, setSchedule] = React.useState({
+        loaded: false,
+        minutes: 0,
+        autoApply: false,
+        writable: false,
+        ns: SCHEDULE_NS,
+        revision: undefined,
+        saving: false,
+        notice: null,
+        error: null,
       })
-      const saveSchedule = React.useCallback((patch) => {
-        setSchedule((prev) => {
-          const next = { ...prev, ...patch }
-          try { localStorage.setItem('dsh_updater_schedule', JSON.stringify(next)) } catch (_) {}
-          return next
-        })
-      }, [])
+
+      /** Fold one Settings namespace view into the dialog state. */
+      const applyNamespace = (view, current) => {
+        if (view === undefined || view === null) {
+          return { ...current, loaded: true, writable: false, error: t('scheduleUnavailable') }
+        }
+        const minutes = Number(view.value?.autoCheckMinutes)
+        return {
+          ...current,
+          loaded: true,
+          ns: view.ns ?? current.ns,
+          revision: view.revision ?? current.revision,
+          minutes: Number.isFinite(minutes) && minutes > 0 ? minutes : 0,
+          autoApply: view.value?.autoApply === true,
+          error: null,
+        }
+      }
+
+      /** Find this plugin's row in a Settings document and fold it into the dialog state. */
+      const scheduleView = (document, current) => {
+        const namespaces = Array.isArray(document?.namespaces) ? document.namespaces : []
+        const found =
+          namespaces.find((row) => row?.value !== null && typeof row?.value === 'object' && row.value.autoCheckMinutes !== undefined) ??
+          namespaces.find((row) => row?.ns === SCHEDULE_NS)
+        if (found === undefined) {
+          return { ...current, loaded: true, writable: false, error: t('scheduleUnavailable') }
+        }
+        return { ...applyNamespace(found, current), writable: document?.writable === true }
+      }
 
       React.useEffect(() => {
-        if (schedule.freq === 'off') return
-        const hours = schedule.freq === '6h' ? 6 : schedule.freq === 'weekly' ? 168 : 24
-        const ms = hours * 3600 * 1000
-        const timer = setInterval(() => { void runScan() }, ms)
-        return () => clearInterval(timer)
-      }, [schedule.freq, runScan])
+        let cancelled = false
+        void (async () => {
+          try {
+            const answer = await ctx.remote.settings.describe()
+            if (cancelled) return
+            if (answer?.ok !== true) throw new Error(answer?.error?.message ?? 'settings unavailable')
+            setSchedule((current) => scheduleView(answer.value, current))
+          } catch (error) {
+            if (!cancelled) {
+              setSchedule((current) => ({ ...current, loaded: true, writable: false, error: String(error?.message ?? error) }))
+            }
+          }
+        })()
+        return () => {
+          cancelled = true
+        }
+      }, [ctx, t])
+
+      /** Persist one schedule field through Settings; the Host applies it on its next tick. */
+      const saveSchedule = React.useCallback(
+        async (patch) => {
+          const ops = Object.entries(patch).map(([field, value]) => ({ op: 'set', path: [field], value }))
+          setSchedule((current) => ({ ...current, saving: true, notice: null }))
+          try {
+            const answer = await ctx.remote.settings.mutate(schedule.ns, ops, schedule.revision)
+            if (answer?.ok !== true) throw new Error(answer?.error?.message ?? 'settings write failed')
+            setSchedule((current) => ({ ...applyNamespace(answer.value, current), saving: false, notice: t('scheduleSaved') }))
+          } catch (error) {
+            setSchedule((current) => ({
+              ...current,
+              saving: false,
+              notice: t('scheduleSaveFailed', { reason: String(error?.message ?? error) }),
+            }))
+            // A stale revision is the common refusal; read it again so the next try lands.
+            try {
+              const answer = await ctx.remote.settings.describe()
+              if (answer?.ok === true) setSchedule((current) => scheduleView(answer.value, current))
+            } catch (_) {
+              /* the notice already reports the failed write */
+            }
+          }
+        },
+        [ctx, schedule.ns, schedule.revision, t],
+      )
+
+      /** The frequency options, with the configured value added when it is not one of them. */
+      const frequencyOptions = () => {
+        const options = FREQUENCIES.map((entry) => ({ value: entry.minutes, label: t(entry.key) }))
+        if (!FREQUENCIES.some((entry) => entry.minutes === schedule.minutes)) {
+          options.push({ value: schedule.minutes, label: t('scheduleCustom', { minutes: String(schedule.minutes) }) })
+        }
+        return options
+      }
 
       const [restarting, setRestarting] = React.useState(false)
       const [restartMsg, setRestartMsg] = React.useState(null)
@@ -1194,12 +1303,6 @@ html[data-ds-dark-theme] .pu-status-tag, body[data-ds-dark-theme] .pu-status-tag
         const plan = safeUpdates.map((entry) => ({ entry, accept: false }))
         startRun(plan)
       }, [safeUpdates, startRun])
-
-      React.useEffect(() => {
-        if (schedule.autoApply && safeUpdates.length > 0 && !busy && state.phase === 'ready') {
-          applyAll()
-        }
-      }, [schedule.autoApply, safeUpdates.length, busy, state.phase, applyAll])
 
       const requestApply = React.useCallback((id, entry) => {
         if (entry === undefined) return
@@ -1442,7 +1545,12 @@ html[data-ds-dark-theme] .pu-status-tag, body[data-ds-dark-theme] .pu-status-tag
                     onClick: () => setScheduleOpen(false),
                   }, '✕'),
                 ),
-                h('p', { style: { margin: '0 0 10px', fontSize: 12.5, color: '#71717a' } }, t('scheduleDesc')),
+                h('p', { style: { margin: '0 0 6px', fontSize: 12.5, color: '#71717a' } }, t('scheduleDesc')),
+                h(
+                  'p',
+                  { style: { margin: '0 0 10px', fontSize: 12, color: schedule.error === null ? '#a1a1aa' : '#f87171' } },
+                  schedule.error ?? (schedule.loaded && schedule.writable === false ? t('scheduleReadonly') : t('scheduleHostHint')),
+                ),
                 h(
                   'div',
                   { className: 'pu-settings-group' },
@@ -1459,13 +1567,11 @@ html[data-ds-dark-theme] .pu-status-tag, body[data-ds-dark-theme] .pu-status-tag
                       'select',
                       {
                         className: 'pu-select',
-                        value: schedule.freq || 'off',
-                        onChange: (e) => saveSchedule({ freq: e.target.value }),
+                        value: String(schedule.minutes),
+                        disabled: schedule.saving || schedule.loaded === false || schedule.writable === false,
+                        onChange: (event) => void saveSchedule({ autoCheckMinutes: Number(event.target.value) }),
                       },
-                      h('option', { value: 'off' }, t('scheduleOff')),
-                      h('option', { value: '6h' }, t('schedule6h')),
-                      h('option', { value: 'daily' }, t('scheduleDaily')),
-                      h('option', { value: 'weekly' }, t('scheduleWeekly')),
+                      frequencyOptions().map((option) => h('option', { key: option.value, value: String(option.value) }, option.label)),
                     ),
                   ),
                   h(
@@ -1475,21 +1581,23 @@ html[data-ds-dark-theme] .pu-status-tag, body[data-ds-dark-theme] .pu-status-tag
                       'div',
                       { className: 'pu-settings-label' },
                       h('div', { className: 'pu-settings-title' }, t('scheduleAutoApply')),
-                      h('div', { className: 'pu-settings-sub' }, t('scheduleAutoApplyHint')),
+                      h('div', { className: 'pu-settings-sub' }, schedule.minutes === 0 ? t('scheduleAutoApplyOff') : t('scheduleAutoApplyHint')),
                     ),
                     h(
                       'button',
                       {
                         type: 'button',
                         role: 'switch',
+                        disabled: schedule.saving || schedule.writable === false,
                         'aria-checked': schedule.autoApply === true,
                         className: `pu-toggle-switch ${schedule.autoApply === true ? 'pu-checked' : ''}`,
-                        onClick: () => saveSchedule({ autoApply: !schedule.autoApply }),
+                        onClick: () => void saveSchedule({ autoApply: !schedule.autoApply }),
                       },
                       h('span', { className: 'pu-toggle-knob' }),
                     ),
                   ),
                 ),
+                schedule.notice === null ? null : h('div', { className: 'pu-note' }, schedule.notice),
                 h(
                   'div',
                   { className: 'pu-modal-foot', style: { marginTop: 10 } },
@@ -1798,7 +1906,7 @@ html[data-ds-dark-theme] .pu-status-tag, body[data-ds-dark-theme] .pu-status-tag
 
     //#endregion
 
-    const inject = ['slots', 'locale', 'remote', 'remote.pluginManager', 'remote.credentials']
+    const inject = ['slots', 'locale', 'remote', 'remote.pluginManager', 'remote.credentials', 'remote.settings']
 
     function apply(ctx) {
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-plugin-updater: dictionaries')
