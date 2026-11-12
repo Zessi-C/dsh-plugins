@@ -74,12 +74,12 @@
                   tailChars: 1024
 
           # `send_message`, `interrupt_agent`, and `list_agents`: the orchestrator
-          # steers and collects its workers with these.
+          # steers and collects its workers with these. All three tools live in
+          # this one row since dsh 0.2.2, which dropped the separate
+          # `./list-agents` entry point; a preset that still names that subpath
+          # fails to load as a whole.
           - id: tool-subagent-control
             name: '@deepseek-ai/dsh-tool-subagent-control'
-
-          - id: tool-subagent-list-agents
-            name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
 
           - id: tool-ask-user
             name: '@deepseek-ai/dsh-tool-ask-user'
