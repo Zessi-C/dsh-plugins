@@ -1206,13 +1206,25 @@ class Updater {
     }
     const install = (target) =>
       manager.installBundle(target, { enabled: record.enabled !== false, saveExact: true, registry: registry ?? undefined })
-    let result = await install(spec)
+    // The manager reports a refusal as a returned failure (`change()` catches the
+    // ManagementFailure and settles it), so the code below is the normal path. A
+    // manager that rejects instead carries the same code on the error, and is
+    // normalised here rather than reporting a crash where a removal would work.
+    const attempt = async (target) => {
+      try {
+        return await install(target)
+      } catch (error) {
+        if (error?.code === 'already-installed') return { application: 'failed', changed: false, error: { code: 'already-installed' } }
+        throw error
+      }
+    }
+    let result = await attempt(spec)
     if (result?.application === 'failed' && result?.error?.code === 'already-installed' && typeof manager.removeBundle === 'function') {
       const removal = await manager.removeBundle(record.name)
       if (removal?.application !== 'failed' && removal?.application !== 'cancelled') {
-        result = await install(spec)
+        result = await attempt(spec)
         const failed = result?.application === 'failed' || result?.application === 'cancelled'
-        if (failed && previous !== undefined) await install(previous).catch(() => undefined)
+        if (failed && previous !== undefined) await attempt(previous).catch(() => undefined)
       }
     }
     this.restoreManifest(record.name, isExactVersionSpec(dependency) ? undefined : dependency, bundles)
