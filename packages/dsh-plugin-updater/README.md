@@ -91,6 +91,8 @@ in a report.
 
 - `git` on PATH for git-hosted plugins. A private GitHub repository works when `gh auth login` configured git's credential helper; otherwise the row says so.
 - Build scripts blocked by pnpm surface as a failure naming the packages; approve them in `pnpm-workspace.yaml` and retry, as the Plugins page does.
+- A profile that runs the HMR service refuses to install over an already installed package, so an update removes
+  the running copy first and installs the target, then puts the previous version back if that install fails.
 - Restart dsh when the page reports `restart-required`: a new module generation is not loaded in place.
 - A plugin shipped with the installation is never overwritten — that would shadow the shipped copy.
 - The background schedule runs in the Host and needs no browser; with `probe: false` it still scans the profile without network access.

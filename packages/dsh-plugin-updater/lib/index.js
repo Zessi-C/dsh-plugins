@@ -41,10 +41,14 @@
  * ── Applying an update ───────────────────────────────────────────────────────
  *
  *   1. `pluginManager.installBundle` installs the exact target, so pnpm, the
- *      build-script policy and the lockfile stay the Harness's business.
+ *      build-script policy and the lockfile stay the Harness's business. A
+ *      profile running the HMR service refuses that call for an installed
+ *      package, so the target is removed first and installed again; the same
+ *      removal the plugin manager's own update path performs.
  *   2. The recorded dependency spec, the bundle selection, and rows the user had
  *      switched off are restored afterwards, because a reinstall re-derives all
- *      three from the newly installed package.
+ *      three from the newly installed package. An exact version pin is not
+ *      restored: it would roll the manifest back to the replaced version.
  *   3. When only the declared dsh range is behind, the installed manifest's
  *      `engines.dsh` / dsh peer range is widened so the release that already
  *      works keeps working; when no release fits at all, `pluginManager` records
@@ -407,6 +411,21 @@ export function composeGitSpec(record, targetRef) {
 //#endregion
 
 //#region helpers
+
+/**
+ * Whether a recorded dependency is an exact version pin.
+ *
+ * `1.3.1` is a pin: after an update installs `1.3.6`, restoring `1.3.1` would
+ * make the next package-manager run downgrade the plugin again. `^1.3.1`, a
+ * repository spec, and a local path are not pins, and are restored so their form
+ * survives a reinstall.
+ *
+ * @param {unknown} spec - The dependency value recorded in the profile manifest.
+ * @returns {boolean} True for a bare exact version.
+ */
+function isExactVersionSpec(spec) {
+  return typeof spec === 'string' && /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(spec)
+}
 
 /** Read JSON without throwing. */
 function readJson(file) {
@@ -1155,16 +1174,28 @@ class Updater {
   /**
    * Install one exact target and put back what a reinstall rewrites.
    *
+   * A profile launched with the HMR service refuses `installBundle` for a package
+   * its manifest already depends on: the running copy has to be removed first.
+   * The plugin manager's own update path does exactly that, and so does this
+   * plugin's browser half; this host path is the third caller, and before this
+   * fallback existed it failed every update with `already-installed`. So the
+   * install is attempted directly first — the non-HMR path — and a refusal that
+   * names `already-installed` is retried after a removal, restoring the copy that
+   * was just removed when the retry fails too.
+   *
    * A reinstall re-derives the dependency spec and the bundle selection from the
-   * new package, so both are snapshotted first: the user's recorded spec is
-   * restored, bundle-list membership is preserved, and rows that were switched
-   * off are switched off again.
+   * new package, so both are snapshotted first: a recorded range or repository
+   * spec is restored, bundle-list membership is preserved, and rows that were
+   * switched off are switched off again. An exact version pin is left at the
+   * newly installed version instead, because restoring it would put the manifest
+   * back to the version the update just replaced.
    */
   async reinstall(record, spec) {
     const manager = this.ctx.get('pluginManager')
     if (manager === undefined) throw new Error('the plugin manager is unavailable in this profile')
     const before = this.profileManifest()
     const dependency = before?.dependencies?.[record.name]
+    const previous = isExactVersionSpec(dependency) ? `${record.name}@${record.version}` : dependency
     const bundles = before?.dsh?.profile?.bundles ?? []
     const disabledRows = this.disabledRowIds(record.rows)
     let registry
@@ -1173,8 +1204,18 @@ class Updater {
     } catch {
       registry = undefined
     }
-    const result = await manager.installBundle(spec, { enabled: record.enabled !== false, saveExact: true, registry: registry ?? undefined })
-    this.restoreManifest(record.name, dependency, bundles)
+    const install = (target) =>
+      manager.installBundle(target, { enabled: record.enabled !== false, saveExact: true, registry: registry ?? undefined })
+    let result = await install(spec)
+    if (result?.application === 'failed' && result?.error?.code === 'already-installed' && typeof manager.removeBundle === 'function') {
+      const removal = await manager.removeBundle(record.name)
+      if (removal?.application !== 'failed' && removal?.application !== 'cancelled') {
+        result = await install(spec)
+        const failed = result?.application === 'failed' || result?.application === 'cancelled'
+        if (failed && previous !== undefined) await install(previous).catch(() => undefined)
+      }
+    }
+    this.restoreManifest(record.name, isExactVersionSpec(dependency) ? undefined : dependency, bundles)
     const restoredRows = []
     for (const rowId of disabledRows) {
       const row = (record.rows ?? []).find((candidate) => candidate.rowId === rowId)
