@@ -354,7 +354,7 @@ dsh-web-ctl update --check           # 只看有没有更新
 dsh-web-ctl update                   # 默认装 next
 dsh-web-ctl update --tag alpha       # 指定 tag
 dsh-web-ctl update --force           # 同版本也强制重装
-dsh-web-ctl update --online          # 强制联网刷新元数据（默认走缓存优先）
+dsh-web-ctl update --offline         # 跳过逐包 revalidate（默认联网校验元数据）
 ```
 
 ### 实例单元（`dsh@.service`）：为什么**不能**设内存上限
@@ -481,7 +481,7 @@ v0.6.0 起安装目标是共享运行时，跑在**系统**单元（root）里�
 sudo systemd-run --unit=dsh-update --collect \
     --setenv=PATH=/opt/dsh/node/bin:/usr/local/bin:/usr/bin:/bin \
     /opt/dsh/node/bin/npm install -g --prefix /opt/dsh/node \
-    @deepseek-ai/dsh@<tag> --no-audit --no-fund --prefer-offline
+    @deepseek-ai/dsh@<version> --no-audit --no-fund --prefer-online
 ```
 
 然后轮询单元状态（每次都是短调用）。带来两个好处：
@@ -493,16 +493,33 @@ sudo systemd-run --unit=dsh-update --collect \
 > 而 systemd 的环境里没有 nvm 的 PATH，否则直接退出码 127
 > （`env: node: No such file or directory`）。这也正是 `dsh-web.service` 要设 PATH 的原因。
 
-### 为什么默认 `--prefer-offline`
+### 为什么默认 `--prefer-online`（v0.15.2 起；此前默认 `--prefer-offline`）
 
-目标版本已经先用 `npm view` 解析过了，再让 npm 逐个包去 revalidate 元数据纯属浪费。
-实测**同一棵树**：联网 revalidate 卡了 11 分钟没进展 vs 缓存优先 **22 秒**完成。
-缓存冷时会自动回退到网络，所以默认开着是安全的；要强制刷新用 `--online`。
+早期默认 `--prefer-offline` 是为省掉逐包 revalidate（实测同棵树
+「联网 revalidate 卡 11 分钟」vs「缓存优先 22 秒」）。但它有个隐蔽的坑：
+**缓存里有旧 packument 时不会回退网络** —— 只有缓存 miss 才回退。
+安装单元跑在 root 下，用的是 `/root/.npm` 缓存 + 共享 npmrc 的 registry，
+和 `update` 前半段 `npm view` 解析 tag 的环境不是同一套；缓存里的
+dist-tag 过期时，`@next` 会被静默解析回旧版本 —— npm 原样重装、exit 0，
+装完 `dsh --version` 没变（2026-11-19 实测：`/root/.npm` 里 10-17
+缓存的 packument 把 next 解析成已装的 0.2.1-rc.2，更新"成功"两次，
+版本一步没动）。
+
+所以 v0.15.2 起两件事都改了：
+
+- 安装命令装的是 **update 阶段已解析出的确切版本**（`@0.2.2-rc.5`），
+  不再让单元里的 npm 把 `@next` 重新解析一遍 —— 两个环境、两套缓存，
+  解析同一个 tag 完全可以得到不同答案；
+- 默认 `--prefer-online`：缓存照用，只是 packument 先做一次 etag
+  revalidate（304 很便宜，tarball 没变就不重下）。
+
+确实要快时用 `--offline`；此时若单元缓存里的 packument 不含目标版本，
+会响亮地 ETARGET 报错，而不是静默装错版本。
 
 安装异常时可以脱离 CLI 直接观察：
 
 ```bash
-journalctl --user -u dsh-update.service -f
+sudo journalctl -u dsh-update.service -f
 ```
 
 ### 更新 dsh 为什么不用重装插件

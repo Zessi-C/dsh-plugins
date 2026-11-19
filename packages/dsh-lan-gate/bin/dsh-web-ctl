@@ -30,7 +30,7 @@ v0.6.0 起面向**多用户门户**架构（单实例 dsh-web.service 已废弃�
   dsh-web-ctl deploy [--dir DIR]
                                上传 lan-gate 插件：共享 seed 目录 + 每用户遗留副本，
                                并重启活动实例
-  dsh-web-ctl update [--tag T] [--check] [--force] [--online]
+  dsh-web-ctl update [--tag T] [--check] [--force] [--offline]
                                更新共享运行时里的 dsh 并滚动重启活动实例
   dsh-web-ctl install-unit [--print] [--diff]
                                写 /etc/systemd/system/dsh@.service（实例模板单元）。
@@ -170,7 +170,7 @@ SERVER_BUNDLE = (
 
 # 与 package.json 的 version 保持一致（单文件零依赖的 CLI 不读 manifest；
 # doctor 会核对这一项）。改版本时两处都要动。
-VERSION = "0.15.1"
+VERSION = "0.15.2"
 
 SSH_OPTS = "-o ConnectTimeout=15 -o BatchMode=yes"
 
@@ -1487,9 +1487,14 @@ def cmd_update(t, a):
 
     # 安装跑在 systemd 系统单元里（root），不挂在 ssh 会话上。
     # --prefix 指到共享运行时 —— 所有用户实例共用这一份 dsh。
-    # 默认 --prefer-offline：目标版本已用 `npm view` 解析过，再逐包 revalidate
-    # 纯属浪费（实测同棵树「联网 revalidate 卡 11 分钟」vs「缓存优先 20 秒」）。
-    offline = " --prefer-online" if a.online else " --prefer-offline"
+    # 装已解析出的确切版本（@{target}）而不是 @{want_tag}：单元里是另一套
+    # npm 环境（root 的 cache + 共享 npmrc 的 registry），让它再解析一遍
+    # dist-tag 会命中过期 packument，把 tag 静默解析回旧版本 —— npm 原样
+    # 重装、exit 0，装完版本没变（2026-11-19 实测：/root/.npm 里 10-17
+    # 缓存的 packument 把 next 解析成已装的 0.2.1-rc.2，更新"成功"两次）。
+    # 同理默认 --prefer-online：packument 只多一次 etag revalidate（304 很便宜），
+    # tarball 没变就不重下；只有明确想省掉逐包 revalidate 时才用 --offline。
+    offline = " --prefer-offline" if a.offline else " --prefer-online"
     start = (
         f'$S systemctl reset-failed {UPDATE_UNIT} 2>/dev/null; '
         f'$S systemd-run --unit={UPDATE_UNIT.removesuffix(".service")} --collect '
@@ -1497,7 +1502,7 @@ def cmd_update(t, a):
         f'--setenv=PATH={shlex.quote(SHARED_NODE + "/bin:/usr/local/bin:/usr/bin:/bin")} '
         f'--setenv=HOME=/root '
         f'{shlex.quote(npm)} install -g --prefix={shlex.quote(prefix or SHARED_NODE)} '
-        f'{DSH_PKG}@{want_tag} --no-audit --no-fund{offline}'
+        f'{DSH_PKG}@{target} --no-audit --no-fund{offline}'
     )
     rc, so, se = t.shell(PREAMBLE + start, timeout=60)
     if rc != 0:
@@ -1914,8 +1919,11 @@ def build_parser():
                     help="要安装的 dist-tag（默认 next）")
     sp.add_argument("--check", action="store_true", help="只检查有没有更新，不安装")
     sp.add_argument("--force", action="store_true", help="版本相同也强制重装")
-    sp.add_argument("--online", action="store_true",
-                    help="强制联网刷新元数据（默认走 --prefer-offline，快很多）")
+    sp.add_argument("--offline", action="store_true",
+                    help="用 --prefer-offline 跳过逐包 revalidate（快；"
+                         "缓存里有过期元数据时可能装不到最新 dist-tag）")
+    # 旧 flag 兼容：联网 revalidate 现在就是默认行为，--online 留着只为不炸老脚本
+    sp.add_argument("--online", action="store_true", help=argparse.SUPPRESS)
 
     sp = sub.add_parser("install-unit",
                         help="写实例模板单元 dsh@.service（唯一真源在 CLI 内）")
