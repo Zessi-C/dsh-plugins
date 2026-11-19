@@ -59,6 +59,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -169,7 +170,7 @@ SERVER_BUNDLE = (
 
 # 与 package.json 的 version 保持一致（单文件零依赖的 CLI 不读 manifest；
 # doctor 会核对这一项）。改版本时两处都要动。
-VERSION = "0.14.3"
+VERSION = "0.15.1"
 
 SSH_OPTS = "-o ConnectTimeout=15 -o BatchMode=yes"
 
@@ -358,7 +359,9 @@ printf 'LISTEN=%s\n' "$(ss -ltn 2>/dev/null | awk -v p=":$PORT" '$4 ~ p"$" {prin
 
 # —— 实例单元 ——
 us=$(systemctl list-units --all --no-legend 'dsh@*' 2>/dev/null | awk '{print $1}' | sed 's/^dsh@//;s/\.service$//')
-echo "INSTANCE_LIST=$us"
+# 必须压成一行：read_state 按 "K=V" 逐行解析，多行值会让除第一个用户外的实例全部丢失
+# （症状：status/doctor 只看见字母序第一个实例，其它用户的实例"不存在"）。
+echo "INSTANCE_LIST=$(echo $us)"
 BASE=${CFG_BACKEND_PORT_BASE:-42000}
 for x in $us; do
   printf 'I_%s_ACTIVE=%s\n' "$x" "$(systemctl --no-pager is-active dsh@$x.service 2>/dev/null)"
@@ -1107,6 +1110,10 @@ def find_lib_dir(override=None):
     cands += [
         os.path.normpath(os.path.join(here, "..", "lib")),   # <repo>/bin/x → <repo>/lib
         os.path.join(here, "lib"),                           # 脚本就在仓库根目录
+        "/home/zeiss/dsh-plugins-repo/packages/dsh-lan-gate/lib",
+        "/home/zeiss/dsh-lan-gate/lib",
+        os.path.join(SEED_DIR, "lib"),
+        SEED_DIR,
     ]
     for c in cands:
         if c and os.path.isfile(os.path.join(c, "index.js")):
@@ -1114,150 +1121,185 @@ def find_lib_dir(override=None):
     return None
 
 
-def cmd_deploy(t, a):
-    """上传插件源码：共享 seed 目录（新用户）+ 每用户遗留副本（旧部署），再滚实例。"""
+def deploy_lan_gate_core(t, libdir=None, restart_instances=True):
+    """部署/更新 lan-gate 插件：共享 seed 目录 + 自动同步/修复所有用户的 profile 副本。"""
     ssh_ok(t)
     need_root(t)
-    libdir = find_lib_dir(getattr(a, "dir", None))
+    if not libdir:
+        libdir = find_lib_dir()
     if not libdir:
         here = os.path.dirname(os.path.abspath(__file__))
         tried = "\n".join(
             f"      · {c}" for c in [
                 os.path.normpath(os.path.join(here, "..", "lib")),
                 os.path.join(here, "lib"),
+                os.path.expanduser("~/dsh-plugins-repo/packages/dsh-lan-gate/lib"),
+                SEED_DIR,
             ])
         die("找不到插件源码目录（需要含 index.js）\n"
             "    已尝试：\n"
             f"{tried}\n"
-            "    请任选其一：\n"
-            "      · 在仓库副本里运行：<repo>/bin/dsh-web-ctl deploy\n"
-            "      · 显式指定：      dsh-web-ctl deploy --dir /path/to/dsh-lan-gate\n"
-            "      · 或设环境变量：  export DSH_LAN_GATE_REPO=/path/to/dsh-lan-gate\n"
-            "      · 或写本机配置：  ~/.config/dsh-web-ctl/config 里加一行\n"
-            "                        plugin_repo = /path/to/dsh-lan-gate")
+            "    请指定 --dir 参数")
 
     files = [f for f in ("index.js", "client.js") if os.path.isfile(os.path.join(libdir, f))]
     if not files:
         die(f"{libdir} 下没有 index.js / client.js")
-    if t.local:
-        die("deploy 需要在远程主机上执行（本机就是宿主时请直接 cp）")
 
     tmp = f"/tmp/dsh-web-ctl-deploy-{os.getpid()}"
-    t.shell(f"mkdir -p {tmp}/lib", timeout=20)
-    print(f"{C.D}源码{C.X} {libdir}")
+    t.shell(f"mkdir -p {tmp}/lib {tmp}/locale", timeout=20)
+    print(f"{C.B}同步 lan mode (dsh-lan-gate){C.X} {C.D}· 源码 {libdir}{C.X}")
     try:
-        for f in files:
-            src = os.path.join(libdir, f)
-            rc, so, se = _raw(f"scp {SSH_OPTS} {shlex.quote(src)} "
-                              f"{shlex.quote(t.host + ':' + tmp + '/lib/' + f)}", timeout=120)
-            if rc != 0:
-                die(f"上传 {f} 失败：{(se or so).strip()[:200]}")
-            print(f"  {C.G}✓{C.X} 上传 {f}")
-        pkg = os.path.normpath(os.path.join(libdir, "..", "package.json"))
-        if os.path.isfile(pkg):
-            rc, so, se = _raw(f"scp {SSH_OPTS} {shlex.quote(pkg)} "
-                              f"{shlex.quote(t.host + ':' + tmp + '/package.json')}", timeout=120)
-            if rc != 0:
-                die(f"上传 package.json 失败：{(se or so).strip()[:200]}")
-            try:
-                ver = json.load(open(pkg, encoding="utf-8")).get("version", "?")
-            except (OSError, ValueError):
+        if t.local:
+            for f in files:
+                src = os.path.join(libdir, f)
+                shutil.copy(src, os.path.join(tmp, "lib", f))
+            pkg = os.path.normpath(os.path.join(libdir, "..", "package.json"))
+            if os.path.isfile(pkg):
+                shutil.copy(pkg, os.path.join(tmp, "package.json"))
+                try:
+                    ver = json.load(open(pkg, encoding="utf-8")).get("version", "?")
+                except (OSError, ValueError):
+                    ver = "?"
+            else:
                 ver = "?"
-            print(f"  {C.G}✓{C.X} 上传 package.json  {C.D}(v{ver}){C.X}")
-        # cordis.patch.yml 必须一起传：package.json 的 dsh.bundle.patch 声明了它，
-        # dsh 安装时校验该文件存在 —— 缺了会「installation rejected」（v0.6.1 实测）。
-        patch = os.path.normpath(os.path.join(libdir, "..", "cordis.patch.yml"))
-        if os.path.isfile(patch):
-            rc, so, se = _raw(f"scp {SSH_OPTS} {shlex.quote(patch)} "
-                              f"{shlex.quote(t.host + ':' + tmp + '/cordis.patch.yml')}", timeout=120)
-            if rc != 0:
-                die(f"上传 cordis.patch.yml 失败：{(se or so).strip()[:200]}")
-            print(f"  {C.G}✓{C.X} 上传 cordis.patch.yml")
+            patch = os.path.normpath(os.path.join(libdir, "..", "cordis.patch.yml"))
+            if os.path.isfile(patch):
+                shutil.copy(patch, os.path.join(tmp, "cordis.patch.yml"))
+            else:
+                die(f"{os.path.dirname(libdir)} 下没有 cordis.patch.yml")
+            loc_dir = os.path.normpath(os.path.join(libdir, "..", "locale"))
+            if os.path.isdir(loc_dir):
+                for lf in os.listdir(loc_dir):
+                    if lf.endswith(".json"):
+                        shutil.copy(os.path.join(loc_dir, lf), os.path.join(tmp, "locale", lf))
         else:
-            die(f"{os.path.dirname(libdir)} 下没有 cordis.patch.yml"
-                "（package.json 的 dsh.bundle.patch 声明了它，缺了装不上）")
+            for f in files:
+                src = os.path.join(libdir, f)
+                rc, so, se = _raw(f"scp {SSH_OPTS} {shlex.quote(src)} "
+                                  f"{shlex.quote(t.host + ':' + tmp + '/lib/' + f)}", timeout=120)
+                if rc != 0:
+                    die(f"上传 {f} 失败：{(se or so).strip()[:200]}")
+            pkg = os.path.normpath(os.path.join(libdir, "..", "package.json"))
+            if os.path.isfile(pkg):
+                rc, so, se = _raw(f"scp {SSH_OPTS} {shlex.quote(pkg)} "
+                                  f"{shlex.quote(t.host + ':' + tmp + '/package.json')}", timeout=120)
+                try:
+                    ver = json.load(open(pkg, encoding="utf-8")).get("version", "?")
+                except (OSError, ValueError):
+                    ver = "?"
+            else:
+                ver = "?"
+            patch = os.path.normpath(os.path.join(libdir, "..", "cordis.patch.yml"))
+            if os.path.isfile(patch):
+                _raw(f"scp {SSH_OPTS} {shlex.quote(patch)} "
+                     f"{shlex.quote(t.host + ':' + tmp + '/cordis.patch.yml')}", timeout=120)
+            else:
+                die(f"{os.path.dirname(libdir)} 下没有 cordis.patch.yml")
+            loc_dir = os.path.normpath(os.path.join(libdir, "..", "locale"))
+            if os.path.isdir(loc_dir):
+                _raw(f"scp {SSH_OPTS} {shlex.quote(loc_dir)}/*.json "
+                     f"{shlex.quote(t.host + ':' + tmp + '/locale/')}", timeout=120)
 
-        # 1) 落进共享 seed 目录（新用户从这里拿）
-        #    chmod a+rX 必须有：sudo cp 会继承 ssh 会话 umask，产出 640/750 时
-        #    普通用户的 pnpm 拷贝 seed 文件直接 EACCES（2026-09-27 实测）。
+        # 1) 写入共享 seed 目录
         rc, so, se = t.shell(
             PREAMBLE +
-            f'$S mkdir -p {SEED_DIR}/lib && '
+            f'$S mkdir -p {SEED_DIR}/lib {SEED_DIR}/locale && '
             f'$S cp {tmp}/lib/*.js {SEED_DIR}/lib/ && '
             f'$S cp {tmp}/package.json {tmp}/cordis.patch.yml {SEED_DIR}/ && '
+            f'[ -d {tmp}/locale ] && $S cp {tmp}/locale/*.json {SEED_DIR}/locale/ 2>/dev/null || true; '
             f'$S chmod -R a+rX {SEED_DIR} && '
             f'echo SEEDED=ok', timeout=60)
         if rc != 0 or "SEEDED=ok" not in (so or ""):
             die(f"写入共享 seed 目录失败：{((se or '') + (so or '')).strip()[:200]}")
-        print(f"  {C.G}✓{C.X} 共享 seed 目录  →  {SEED_DIR}")
+        print(f"  {C.G}✓{C.X} 共享 seed 目录 (v{ver})  →  {SEED_DIR}")
 
-        # 2) 刷新每个已装 lan-gate 的用户。
-        #    关键：pnpm 对 file: 依赖做的是**拷贝**（非链接）—— seed 目录更新后
-        #    已装用户的 node_modules 里还是旧副本，光滚动重启读不到新代码。
-        #    所以按依赖路径分类：seed 用户 remove+add 重装；legacy 用户直接覆盖。
-        rc, so, _ = t.shell(PREAMBLE + r'''
+        # 2) 刷新及自动修复每个用户的 profile
+        rc, so, _ = t.shell(PREAMBLE + f'''
 for m in /home/*/.dsh/profiles/web/package.json; do
   [ -f "$m" ] || continue
   u=$(echo "$m" | sed 's|/home/||;s|/.dsh/profiles/web/package.json||')
+  python3 -c "
+import json, sys
+p = '$m'
+try:
+    with open(p, 'r', encoding='utf-8') as f:
+        d = json.load(f)
+    deps = d.setdefault('dependencies', {{}})
+    bundles = d.setdefault('dsh', {{}}).setdefault('profile', {{}}).setdefault('bundles', [])
+    changed = False
+    if 'dsh-lan-gate' not in deps:
+        deps['dsh-lan-gate'] = 'file:{SEED_DIR}'
+        changed = True
+    if 'dsh-lan-gate' not in bundles:
+        bundles.append('dsh-lan-gate')
+        changed = True
+    if changed:
+        with open(p, 'w', encoding='utf-8') as f:
+            json.dump(d, f, indent=2)
+            f.write('\\n')
+        print(f'FIXED={{p}}')
+except Exception as e:
+    sys.stderr.write(str(e))
+" 2>/dev/null
   dep=$(python3 -c "import json
-try: print(json.load(open('$m')).get('dependencies',{}).get('dsh-lan-gate',''))
+try: print(json.load(open('$m')).get('dependencies',{{}}).get('dsh-lan-gate',''))
 except Exception: print('')" 2>/dev/null)
-  printf 'U=%s DEP=%s\n' "$u" "$dep"
+  printf 'U=%s DEP=%s\\n' "$u" "$dep"
 done
 ''', timeout=60)
         rows = []
         for line in (so or "").splitlines():
             m = re.match(r"U=(\S+) DEP=(.*)", line)
-            if m and m.group(2).strip():
+            if m:
                 rows.append((m.group(1), m.group(2).strip()))
         refreshed = 0
         for u, dep in rows:
-            if SEED_DIR in dep:
-                inner = (f"cd /home/{u}/.dsh/profiles/web && "
-                         f"export PATH={SHARED_NODE}/bin:/usr/local/bin:/usr/bin:/bin && "
-                         f"export NODE_ENV=production && "
-                         f"{SHARED_NODE}/bin/dsh plugin --profile web remove dsh-lan-gate && "
-                         f"{SHARED_NODE}/bin/dsh plugin --profile web add file:{SEED_DIR}")
-                rc, rso, rse = t.shell(
-                    PREAMBLE + f'$S sudo -n -u {shlex.quote(u)} -H sh -c '
-                    f'{shlex.quote(inner)} && echo REFRESHED=ok', timeout=300)
-                if rc != 0 or "REFRESHED=ok" not in (rso or ""):
-                    print(f"  {C.Y}!{C.X} 重装 {u} 的 seed 副本失败："
-                          f"{((rse or '') + (rso or '')).strip()[-160:]}")
-                else:
-                    refreshed += 1
-            elif ".dsh/plugins" in dep:
+            user_nm = f"/home/{u}/.dsh/profiles/web/node_modules/dsh-lan-gate"
+            t.shell(
+                PREAMBLE +
+                f'$S mkdir -p {user_nm}/lib {user_nm}/locale && '
+                f'$S cp {tmp}/lib/*.js {user_nm}/lib/ && '
+                f'$S cp {tmp}/package.json {tmp}/cordis.patch.yml {user_nm}/ && '
+                f'[ -d {tmp}/locale ] && $S cp {tmp}/locale/*.json {user_nm}/locale/ 2>/dev/null || true; '
+                f'$S chown -R {u}:$(id -gn {u} 2>/dev/null || echo {u}) {user_nm}', timeout=60)
+
+            if ".dsh/plugins" in dep:
                 home = f"/home/{u}"
-                rc, so2, se2 = t.shell(
+                t.shell(
                     PREAMBLE +
                     f'$S cp {tmp}/lib/*.js {home}/{LEGACY_PLUGIN_DIR}/ && '
                     f'$S cp {tmp}/package.json {tmp}/cordis.patch.yml {home}/{LEGACY_PLUGIN_ROOT}/ && '
-                    f'$S chown -R {u}:$(id -gn {u} 2>/dev/null || {u}) {home}/{LEGACY_PLUGIN_ROOT} && '
-                    f'echo UPDATED=ok', timeout=60)
-                if rc != 0 or "UPDATED=ok" not in (so2 or ""):
-                    print(f"  {C.Y}!{C.X} 更新 {u} 的遗留副本失败：{((se2 or '') + (so2 or '')).strip()[:160]}")
-                else:
-                    print(f"  {C.G}✓{C.X} 遗留副本  →  {home}/{LEGACY_PLUGIN_ROOT}（{u}）")
+                    f'$S chown -R {u}:$(id -gn {u} 2>/dev/null || {u}) {home}/{LEGACY_PLUGIN_ROOT}', timeout=60)
+            refreshed += 1
+            print(f"  {C.G}✓{C.X} 已同步/修复插件至用户 profile  →  {u}")
         if refreshed:
-            print(f"  {C.G}✓{C.X} seed 用户重装副本 ×{refreshed}（file: 依赖是拷贝，必须重装才吃到新代码）")
+            print(f"  {C.G}✓{C.X} 共同步更新 {refreshed} 个用户的 lan mode")
     finally:
         t.shell(f"rm -rf {tmp}", timeout=20)
 
-    # 3) 滚动重启活动实例（portal 不用动 —— 它是纯 Python）
-    rc, so, _ = t.shell(PREAMBLE +
-                        "systemctl list-units --no-legend 'dsh@*' 2>/dev/null "
-                        "| awk '$3==\"active\"{print $1}' | sed 's/^dsh@//;s/\\.service$//'",
-                        timeout=30)
-    users = [u for u in so.split() if u]
-    if users:
-        print()
-        print(f"{C.B}滚动重启实例{C.X}")
-        for u in users:
-            print(f"  {C.D}…{C.X} {u}")
-            _svc_action(t, "restart", user=u)
-    else:
-        print(f"  {C.D}(没有活动实例 —— 下次登录自动生效){C.X}")
+    if restart_instances:
+        rc, so, _ = t.shell(PREAMBLE +
+                            "systemctl list-units --no-legend 'dsh@*' 2>/dev/null "
+                            "| awk '$3==\"active\"{print $1}' | sed 's/^dsh@//;s/\\.service$//'",
+                            timeout=30)
+        users = [u for u in so.split() if u]
+        if users:
+            print()
+            print(f"{C.B}滚动重启实例{C.X}")
+            for u in users:
+                print(f"  {C.D}…{C.X} {u}")
+                _svc_action(t, "restart", user=u)
+        else:
+            print(f"  {C.D}(没有活动实例 —— 下次登录自动生效){C.X}")
     return 0
+
+
+def cmd_deploy(t, a):
+    """上传插件源码：共享 seed 目录（新用户）+ 每用户遗留副本（旧部署），再滚实例。"""
+    ssh_ok(t)
+    need_root(t)
+    libdir = find_lib_dir(getattr(a, "dir", None))
+    return deploy_lan_gate_core(t, libdir=libdir, restart_instances=True)
 
 
 # ─────────────────────────── 子命令：update（共享运行时） ───────────────────────────
@@ -1415,8 +1457,10 @@ def cmd_update(t, a):
         return 0
 
     if installed == target and not a.force:
-        print(f"  {C.G}已是最新（{want_tag} = {target}），无需更新{C.X}")
-        print(f"  {C.D}想强制重装：dsh-web-ctl update --tag {want_tag} --force{C.X}")
+        print(f"  {C.G}已是最新（{want_tag} = {target}），无需更新 dsh 核心{C.X}")
+        print(f"  {C.D}检查并同步 lan mode (dsh-lan-gate)...{C.X}")
+        print()
+        deploy_lan_gate_core(t, restart_instances=True)
         return 0
 
     if a.check:
@@ -1502,6 +1546,10 @@ def cmd_update(t, a):
               f"  {C.D}(实例可能读不了新装文件 —— 手动跑：chmod -R a+rX {SHARED_NODE}/lib/node_modules){C.X}")
     else:
         print(f"  {C.G}✓{C.X} 运行时权限修正（a+rX）—— 防止 tarball 带出的 750 目录锁死普通用户")
+
+    # 自动同步最新版 lan mode (dsh-lan-gate) 到共享 seed 和所有用户 profile
+    print()
+    deploy_lan_gate_core(t, restart_instances=False)
 
     # 滚动重启活动实例（共享运行时就位后实例要重启才吃到新版本）
     users_now = _active_instance_users(t)

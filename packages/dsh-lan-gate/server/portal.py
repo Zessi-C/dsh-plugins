@@ -715,6 +715,10 @@ class Portal:
         self.session_locks = {}
         # username -> 缓存的该实例 Set-Cookie 列表，供多设备/新浏览器快速分发，避免重复翻日志
         self.instance_cookie_sets = {}
+        # 每个连接处理 Task 的强引用。asyncio 的 loop 只持有 Task 的弱引用，
+        # 回调返回的 Task 若不自己存着，可能在跑完前被 GC —— 表现为
+        # "Task was destroyed but it is pending!" 与客户端看到连接被重置。
+        self.conn_tasks = set()
         allowed = {a.lower().strip() for a in (cfg.get("public_authorities") or [])}
         bind, port = cfg["bind"], cfg["port"]
         allowed |= {f"{bind}:{port}", bind, f"localhost:{port}", f"127.0.0.1:{port}"}
@@ -1197,8 +1201,16 @@ class Portal:
     async def handle(self, reader, writer):
         peer = writer.get_extra_info("peername")
         ip = peer[0] if peer else "?"
+        task = asyncio.current_task()
+        if task is not None:
+            self.conn_tasks.add(task)
         try:
             await self._handle(reader, writer, ip)
+        except ConnectionError as exc:
+            # 关标签页 / 刷新 / 断网都是这一类。审计按 msg 统计，把它算成
+            # error 会把真正的 5xx 淹掉（参照 upstream_log_level 的分档原则）。
+            self.log("info", "client disconnected", ip=ip,
+                     detail=f"{type(exc).__name__}: {exc}")
         except Exception as exc:  # noqa: BLE001
             self.log("error", "request failed", ip=ip, detail=f"{type(exc).__name__}: {exc}")
             try:
@@ -1215,6 +1227,8 @@ class Portal:
                 writer.close()
             except Exception:  # noqa: BLE001
                 pass
+            if task is not None:
+                self.conn_tasks.discard(task)
 
     async def _handle(self, reader, writer, ip):
         cfg = self.cfg
@@ -1755,7 +1769,9 @@ async def serve(cfg):
             continue
         extras.append(srv)
         portal.log("info", "portal listening (extra)", bind=extra, port=port)
-    asyncio.create_task(portal.reaper())
+    # reaper 必须留强引用：loop 只弱引用 Task，没人持有的话空闲回收会在
+    # 某次 GC 后静默消失（实例再也不回收，日志里看不出任何异常）。
+    portal.background = asyncio.create_task(portal.reaper())
     for srv in extras:
         await srv.start_serving()
     async with server:

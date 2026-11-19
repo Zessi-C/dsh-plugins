@@ -6,3 +6,8 @@ fetch-retry-maxtimeout=6000
 # 若要复用 mihomo 代理提速（实测 tencent 经代理 8.29MB/s），取消下行注释：
 # proxy=http://127.0.0.1:7890
 # https-proxy=http://127.0.0.1:7890
+
+# npm 11.19 默认跳过原生 install 脚本，node-pty/koffi 等原生依赖不会构建
+# （2026-11-07 升级 dsh 0.2.2 时实测）。共享 npmrc 必须显式放行这些包，
+# 否则实例启动即 "Cannot find module ... node-pty"。
+allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty,@google/genai,protobufjs
